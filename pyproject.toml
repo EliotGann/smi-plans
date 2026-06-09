@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "smi-plans"
+version = "0.1.0"
+description = "Composable, GUI-ready Bluesky acquisition plans for the NSLS-II SMI-SWAXS beamline."
+readme = "README.md"
+requires-python = ">=3.7"
+license = { text = "BSD-3-Clause" }
+authors = [{ name = "NSLS-II SMI" }]
+keywords = ["bluesky", "ophyd", "synchrotron", "SAXS", "WAXS", "GIWAXS", "NSLS-II", "SMI"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+
+# NOTE: bluesky / ophyd / numpy are provided by the live beamline IPython environment
+# (the SMI profile collection).  They are intentionally NOT hard runtime requirements so the
+# pure-Python parts (smi_plans._samples, the experiment-spec model, the code generator) and the
+# test suite can be installed/exercised standalone.  Install the [beamline] extra to pull them
+# in for off-beamline development against simulated devices.
+dependencies = []
+
+[project.optional-dependencies]
+beamline = ["bluesky", "ophyd", "numpy"]
+test = ["pytest", "bluesky", "ophyd", "numpy"]
+dev = ["pytest", "bluesky", "ophyd", "numpy", "ruff"]
+
+[project.urls]
+Homepage = "https://github.com/NSLS-II-SMI"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
