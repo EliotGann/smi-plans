@@ -22,9 +22,13 @@ because it extends the device-debt tracking (`DEVICE_DEBT.md`) that the plans de
 3. **The package becomes importable & testable** off-beamline (with `ophyd.sim`), like `smi-plans`
    already is.
 4. **Device fixes are decoupled from packaging.** The highest-value work (humidity, Linkam,
-   exposure-time, fast shutter, `prs`) can land *before* any big structural move, so users feel
-   the benefit early.
+   exposure-time, fast shutter, Huber-phi repoint) can land *before* any big structural move, so
+   users feel the benefit early.
 5. **Small, reviewable PRs**, each tied to audit items by ID (C1–C7, H1–H7, M1–M6, L1–L6).
+6. **Two adjacent workstreams are planned alongside this** (see §7–§8): **queueserver (QS)
+   enablement** (gated on the Phase-4 factory + four QS-specific artifacts) and **migrating
+   persistent config/calibration into the Redis-backed dict** (folds into Phases 1 & 3, and is a
+   soft prerequisite for a good QS experience because Redis is process-shared).
 
 ---
 
@@ -217,7 +221,7 @@ count each detector, one alignment, one energy move, one temperature setpoint, s
 | C3/C4 Humidity signals (2) | `_devices.humidity_signal` + `FunctionBackedSignal` usage; `DEVICE_DEBT.md` item #1; `technique_G` message-pure |
 | C5 `det_exposure_time` plan (2) | removes a bare-function call pattern alignment/techniques rely on; strengthens Tenet 6 |
 | C6 fast-shutter `set()` (2) | enables `bps.mv(fs, …)` in any plan needing the fast shutter |
-| C7 `prs` (2) | unblocks `technique_I/J/K` + `_compose.motor_axis("prs", …)` (Tenet 7) |
+| C7 Huber phi axis (2) | unblocks `technique_I/J/K` + `_compose.motor_axis("prs", …)` once repointed from `prs` to the Huber phi axis (Tenet 7) |
 | H5/H6 drop `sample_id`/`get_scan_md` (3) | confirms Tenets 2–4 end-to-end; removes the legacy filename path |
 
 When all Critical items land, `smi_plans._devices.py` can be reduced to (ideally) empty, and
@@ -225,12 +229,143 @@ When all Critical items land, `smi_plans._devices.py` can be reduced to (ideally
 
 ---
 
-## 7. Open questions for beamline staff
+## 7. Queueserver (QS) enablement — where it fits
+
+**Short answer to "is QS after the cleanup?": yes, mostly — the cleanup *is* what unblocks QS —
+but QS readiness is a distinct milestone with four extra, QS-specific steps that are NOT part of
+the package cleanup.** The decisive cleanup phase for QS is **Phase 4** (the instances factory
+that removes the `get_ipython()` grabs).
+
+### 7.1 How QS actually loads this profile (the governing fact)
+`pixi run qs.qs-backend` runs `start-re-manager --profile-dir=.`, which (with the default
+settings) uses the **pure-Python worker**, *not* IPython. It `exec`s the top-level `startup.py`
+into a plain dict and injects only a **stub** `get_ipython()` (an `IPDummy` exposing just
+`.user_ns` and `.log`). Crucially, that stub patch applies **only to the directly-exec'd
+`startup.py`** — all real code lives in the `smibase` *package*, imported normally, where
+`from IPython import get_ipython` is the **real** function and returns **`None`** in the worker.
+
+**Therefore the profile fails at env-open today on the very first line of `base.py`:**
+```python
+nslsii.configure_base(get_ipython().user_ns, ...)   # get_ipython() is None -> AttributeError
+```
+…and would then hit the same `None` on all 23 `get_ipython().user_ns['sd'|'RE'|'bec'|'db']`
+grabs, on `ip.prompts = ProposalIDPrompt(ip)`, on the import-time Duo push
+(`from_profile(..., username=None)`), and on the import-time `RE.install_suspender(...)`.
+
+(Confirmed against the installed `bluesky_queueserver` 0.0.23 + `nslsii` 0.11.9:
+`profile_ops.load_profile_collection` execs files into a dict; `_startup_script_patch` provides
+the `IPDummy` stub; `nslsii.configure_base` guards its IPython-only bits with `if ipython:` but
+the **call site** passing `get_ipython().user_ns` crashes first when `get_ipython()` is `None`.)
+
+### 7.2 QS blockers map onto the existing phases
+
+| QS blocker | Fixed by | Phase |
+|---|---|---|
+| 23× `get_ipython().user_ns[...]` grabs + `None.user_ns` crash | dependency-injection factory `make_devices(context)` | **Phase 4 (M1) — the gate** |
+| `ip.prompts`, magics, `configure_olog` IPython bits | guard with `is_ipython_mode()` / `is_re_worker_active()` | Phase 4 |
+| import-time Duo push / Tiled / Redis / secret reads | move into the bootstrap, guard for the worker | Phase 1 / 4 (M1) |
+| import-time `RE.install_suspender` / blocking EPICS `.get()`/`.wait()` | move out of import; guard | Phase 3 / 4 |
+| interactive `input()` mid-plan, `plt.show()` | covered by the Tenet-5/6 cleanup + worker guards | Phase 2 / 3 |
+
+### 7.3 The four QS-specific steps (NOT part of the cleanup)
+These must be planned in addition to Phases 0–4:
+
+1. **`existing_plans_and_devices.yaml`** — the cached plan/device list. Generate with
+   `qserver-list-plans-devices --startup-dir . --file-dir .`. (QS will *start* without it and
+   auto-populate on first env-open, but generating it explicitly catches problems early.)
+2. **`user_group_permissions.yaml`** — allow/deny lists; **must include a `root` group**. Not
+   auto-generated; author from a template. Without it QS starts but **clients cannot submit
+   plans** ("USERS WILL NOT BE ABLE TO SUBMIT PLANS").
+3. **Plan-signature validation** — QS rejects (by default, *fails env-open on*) plans whose
+   parameter **defaults aren't reconstructable** (e.g. a default that is a device object or a
+   lambda) or whose **type annotations** can't be rebuilt. Action: run
+   `qserver-list-plans-devices` against the profile, then either annotate offending plans with
+   `parameter_annotation_decorator` / fix the signatures, or run with `--ignore-invalid-plans ON`
+   initially. **Most of the user-facing plans are in `smi-plans`** (already signature-clean and
+   message-pure with a test enforcing it), so the risk concentrates in the *profile's own* plans
+   (`alignment`, beam-mode, exposure) — another reason Phase 3 (logic move + cleanup) precedes QS.
+4. **Deployment infra** — a **Redis** server for the queue/permissions store (separate from the
+   metadata Redis), plus the systemd units / ansible roles the `pixi.toml` `[feature.qs.tasks]`
+   comment already flags as "needs development work."
+
+### 7.4 Sequencing recommendation
+- **Recommended path (clean):** QS comes up after **Phases 0–4** + the four steps above. Phase 4
+  (factory) is the gate; everything before it makes the worker *load*, and Phases 2–3 make the
+  plans *safe and usable* (message-pure, no `input()`/`plt.show()` mid-plan).
+- **Optional "QS-minimal" earlier milestone:** make `base.py` worker-aware *without* the full
+  `devices/`+`config/`+`plans/` reorg — i.e. guard IPython-only code with `is_re_worker_active()`,
+  pass the real namespace instead of `get_ipython().user_ns`, neutralize the ~22 `sd`-grabs via a
+  shared baseline helper, and gate Duo/suspender/prompt code. This can yield a working QS backend
+  after **Phases 0–2 + §7.3**, deferring the elegant factory to Phase 4.
+  **Tradeoff:** faster QS, but `base.py`/bootstrap is touched twice (shortcut, then clean
+  factory). Choose this only if QS is needed before the full restructure (see Open Question
+  Q-QS).
+
+> **Bottom line:** your instinct is right — QS lands *after* the cleanup, specifically gated on
+> the Phase-4 factory. The only nuance is that QS also needs the four non-cleanup artifacts in
+> §7.3, and (per §8 below) a process-shared **Redis config** so the worker and the terminal agree
+> on calibration.
+
+---
+
+## 8. Redis-backed config — a parallel workstream (folds into Phases 1 & 3)
+
+**Goal (from beamline staff):** anything we currently **write to a file**, **hardcode as a
+"current good value,"** or **should persist across restarts** belongs in the **Redis-backed dict**
+(`mdsave`), seeded into `kind="config"` ophyd Signals and written back through a helper — **never a
+file**, and never `RE.md` strings.
+
+### 8.1 Why this is its own axis (and why it helps QS)
+This is orthogonal to both the package cleanup and QS, but synergistic: because Redis is
+**process-shared**, config in `mdsave` is seen by *both* the IPython terminal and the QS worker,
+whereas a file written by one process (or `RE.md` in one process) is not. So the Redis migration
+is a **soft prerequisite for a good QS experience**.
+
+### 8.2 Current state (audit §4.6)
+- **Already migrated (reference pattern):** all SAXS beam-center/beamstop/sample-Z offsets and the
+  whole `distance_calibration` SDD LUT (`smiclasses/pilatus.py:411-429,546-562,676-681`).
+- **File-based, but already effectively dead:** `smi_config.csv`, `intepolation_db_sdd2.txt` (only
+  in dead checkpoints/scripts) → retire. `agb_z_calibration_results/*.npy` are offline-calibration
+  *inputs* read by `scripts/build_distance_calibration.py` (which already writes to `mdsave`) →
+  keep as raw staging.
+- **Hardcoded-in-source (the real targets):** energy IVU-gap offset arrays
+  (`smiclasses/energy.py:144-145`), bimorph voltage tables + `-80` offset (`smiclasses/bimorph.py`),
+  `STG_pseudo` rotation centers (obsolete with Huber).
+
+### 8.3 The pattern to standardize
+The Pilatus already shows it; generalize with two refinements:
+1. **Seed:** `Cpt(Signal, value=cfg.get("saxs.beam_offset_x_mm", DEFAULT), kind="config")`.
+2. **Persist:** a small helper instead of N hand-written lines, e.g.
+   `persist_config(device, keys)` / `load_config(device)` (the Pilatus writes ~15
+   `mdsave[...] = sig.get()` lines by hand today).
+3. **Namespace + registry:** keys are going flat (`saxs_*`, `distance_calibration`). Adopt a
+   dotted convention (`saxs.beam_offset_x_mm`, `energy.ivu_gap_offsets`, `bimorph.hfm_default`)
+   and a single **`config/redis_keys.py` registry** documenting every key, default, and units.
+   **This registry *is* the `config/` module from §3**, backed by Redis for *runtime/calibration*
+   values. **Static PV strings stay as Python in `config/pvs.py`** — they are code, not runtime
+   state, and do not belong in Redis.
+
+### 8.4 Where it lands in the phases
+- **Phase 1:** stand up `config/redis_keys.py` (registry + defaults) and the
+  `load_config`/`persist_config` helpers; move *static PV strings* into `config/pvs.py`.
+- **Phase 3:** migrate the hardcoded calibration tables (energy IVU offsets, bimorph tables) into
+  Redis-seeded `kind="config"` Signals; delete `RE.md`-as-config (`beam.py:423-425`); formally
+  retire `smi_config.csv` / `intepolation_db_sdd2.txt`.
+- **Provenance (decide — Open Question Q-Redis):** Redis-as-source-of-truth has **no git history /
+  rollback** for calibration. Options: accept it (as Pilatus does today), or add a periodic
+  "dump Redis config → JSON in git" snapshot for provenance.
+
+---
+
+## 9. Open questions for beamline staff
 
 1. **RH readback:** confirm there is no dedicated % RH PV and that wrapping `…AI:1-I` with the
    Python conversion (offset 0.816887 / slope 0.028813 / T-correction) is the intended source.
-2. **`prs`:** is the precision rotation stage decommissioned, or just not loaded? CD-SAXS,
-   tomography, and XRR presets assume it exists.
+2. **Q-Huber — sample stack:** confirmed the **hexapod was replaced by a Huber stage (kept the
+   name `stage`) with a Huber phi axis (replaces `prs`), and `piezo` (SmarAct fine) is unchanged
+   and still on top.** Remaining: what is the Huber `stage`'s exact axis set, and what is the phi
+   attribute name (`stage.phi`?) that `smi-plans` should target in place of `prs`? Is
+   `STG_pseudo`/its rotation-center math now fully obsolete?
 3. **`pil2M_pos` vs `pil2m_pos`:** which is canonical? (Plans use uppercase; profile defines
    lowercase.) Alias accordingly.
 4. **`pil300KW` / `rayonix`:** decommissioned, or to be restored? (Both are commented out.)
@@ -238,10 +373,16 @@ When all Critical items land, `smi_plans._devices.py` can be reduced to (ideally
    valves vs foils — confirm the correct mapping before unifying `TwoButtonShutter`.
 6. **Package name & home:** confirm `smi_beamline` (or preferred name) and whether the package
    lives in the profile repo or a new repo installed by the profile.
+7. **Q-QS — timeline:** do you want the **"QS-minimal shortcut"** (§7.4) as a real earlier
+   milestone (faster, but `base.py`/bootstrap touched twice), or keep QS gated on the clean
+   Phase-4 factory?
+8. **Q-Redis — provenance:** do you want a periodic "dump Redis config → git/JSON" snapshot for
+   version history/rollback (§8.4), or is the live Redis dict the sole source of truth (as the
+   Pilatus treats it today)?
 
 ---
 
-## 8. Suggested first PR (smallest useful slice)
+## 10. Suggested first PR (smallest useful slice)
 
 Phase 0 only: delete `content.json` + `mi.setDirectBeamROI`, fix the unambiguous bugs (L3, L6,
 H7, M5), remove dead `STG_pseudo`/unused imports, and move the SSH password to a secret. No

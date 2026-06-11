@@ -150,12 +150,26 @@ is the wrong axis there; the real axes are **device-classes vs. config vs. plans
 
 ### 4.2 Motion & optics
 
+> **HARDWARE CHANGE (2025/2026) — read before using this table.** Per beamline staff, the
+> **coarse stage was replaced**: the old **hexapod** is gone, replaced by a **Huber stage** (the
+> device **kept the name `stage`**) with a **Huber phi axis** that replaces the old `prs`
+> (precision rotation stage). **`piezo` (the SmarAct fine stage) is UNCHANGED** — it still sits on
+> top of the (now Huber) coarse stage. So the GI double-stack is now **Huber `stage` (coarse) +
+> `piezo` (fine)**. Consequences the audit flags as action items:
+> - **`prs` is not "missing-to-be-readded"** — it is **superseded by the Huber phi axis**
+>   (expected `stage.phi` or similar). `smi-plans` (`technique_I/J/K`, `_compose.motor_axis("prs",…)`,
+>   the `.. important::` blocks) must be **repointed to the Huber phi axis**, not given a new `prs`.
+> - **`piezo` references in `smi-plans` remain valid** (the fine stage is still there).
+> - **`stage` API may have changed** with the Huber swap (axis set / phi attribute); confirm
+>   `stage.*` against what plans call. `STG_pseudo`'s rotation-center math was for the old stack
+>   and is almost certainly obsolete. See Open Question Q-Huber in `STARTUP_RESTRUCTURE_PLAN.md`.
+
 | Global | Class @ file:line | Cleanliness |
 |---|---|---|
-| `piezo` | `SMARACT` `smibase/manipulators.py:12` | `.x/.y/.z/.th/.ch` clean `EpicsMotor` ✅; `piezo.th` = incident angle ✅. PVs hardcoded in class body (⚠️ should be a prefix). |
-| `stage` | `STG` `smibase/manipulators.py:10` | `.x/.y/.z/.th/.ph/.ch` clean `EpicsMotor` ✅; `stage.th` = incident angle ✅. |
+| `piezo` (SmarAct fine — **current**) | `SMARACT` `smibase/manipulators.py:12` | ✅ **Unchanged by the Huber swap.** `.x/.y/.z/.th/.ch` clean `EpicsMotor`; `piezo.th` = incident angle. PVs hardcoded in class body (⚠️ should be a prefix). |
+| `stage` (**Huber** coarse — current) | `STG` (verify class post-swap) `smibase/manipulators.py:10` | Coarse stage; was hexapod `.x/.y/.z/.th/.ph/.ch`. **Confirm the Huber axis set + the phi attribute** (replaces `prs`). |
 | `bdm` | `BDMStage` `smibase/manipulators.py:7` | ❌ `.x/.y/.th` are bare `EpicsSignal` write_pv pairs — **no move-completion**; `bps.mv` returns on write, not on arrival. Not in baseline. |
-| `stage_pseudo` | `STG_pseudo` `smibase/manipulators.py:11` | ❌ `name="stage"` **collides** with real `stage`; **zero consumers** → the ~400-LOC `STG_pseudo` class is dead. |
+| `stage_pseudo` | `STG_pseudo` `smibase/manipulators.py:11` | ❌ `name="stage"` **collides** with real `stage`; **zero consumers**; rotation-center math was for the old hexapod stack → the ~400-LOC `STG_pseudo` class is dead and almost certainly obsolete with Huber. |
 | `att1_1..12`, `att2_1..12` | `Attenuator` `smibase/attenuators.py:9-33` | In baseline ✅. `att2_*` present (plans use `att2_9`). Driven via `bps.mv(att.close_cmd,1)` in `beam.py` (message-based ✅) but leaks raw command-PV semantics; `Attenuator.set()` is dead+blocking (§4.5). |
 | `crl` | `CRL` `smibase/crls.py:6` | 12 lens motors + stage; clean `EpicsMotor` ✅. No pseudo-positioner for energy→lens-count (logic lives in plans). |
 | `hfm/vfm/vdm` | `MIR` `smibase/mirrors.py:7-9` | Clean `EpicsMotor` ✅. |
@@ -204,6 +218,37 @@ is the wrong axis there; the real axes are **device-classes vs. config vs. plans
   (`:507,517`); `SMI_SAXS_detector` defines `x0_pix` with `name=…y0_pix` (`beam.py:38`).
 - **Secrets in source**: SSH host/user/password for the detector PC (`smibase/pilatus.py:155-157`).
 
+### 4.6 Config & calibration persistence (file vs. Redis vs. hardcoded)
+
+The beamline has begun migrating persistent config/calibration into a **Redis-backed dict**
+(`mdsave = RedisJSONDict(...)`, `smibase/base.py:25`). State of play:
+
+- **Already in Redis (the reference pattern):** all SAXS beam-center / beamstop / sample-Z
+  offsets and the **`distance_calibration` SDD lookup table** live in `mdsave`
+  (`smiclasses/pilatus.py:411-429` seed via `Cpt(Signal, value=mdsave.get(key, default),
+  kind="config")`; `:546-562,676-681` persist via `mdsave[key] = sig.get()`). `beam.py`'s
+  `interpolate_sdds()` (`:440`) reads from Redis. **This is the model to propagate.**
+- **Still file-based:**
+  - `smi_config.csv` (repo root, 373 rows back to 2019) — referenced **only in dead
+    `.ipynb_checkpoints/` and the non-startup `scripts/`**; effectively already abandoned.
+  - `intepolation_db_sdd2.txt` (`startup/`) — referenced **only in dead checkpoints**.
+  - `agb_z_calibration_results/*.npy` (16 arrays) — **raw scan staging** read by
+    `scripts/build_distance_calibration.py`, which itself **writes results into `mdsave`**. So the
+    files are offline-calibration inputs, not live config (reasonable to keep as staging).
+- **Hardcoded-in-source config (neither file nor Redis — the real migration targets):**
+  - `smiclasses/energy.py:144-145` — IVU-gap experimental energy/offset arrays.
+  - `smiclasses/bimorph.py` — `default_hfm_v2`/`default_vfm_v2`/`default_vfm_opls` voltage tables +
+    magic `-80` offset.
+  - `smiclasses/manipulators.py:245-258` — `STG_pseudo` rotation centers (**obsolete** with the
+    hexapod→Huber swap).
+- **`RE.md` as a config store (anti-pattern):** `beam.py:423-425` stuffs
+  `beamline_sample_environment` / `beamline_attenuators` into `RE.md` strings.
+
+**Note for `smi-plans`:** because Redis is **process-shared**, config in `mdsave` is visible to
+*both* the IPython terminal and a future QS worker; file- or `RE.md`-based config is **not**. This
+makes the Redis-config migration a soft prerequisite for a good queueserver experience (see the
+QS section + Redis-config workstream in `STARTUP_RESTRUCTURE_PLAN.md`).
+
 ---
 
 ## 5. What `smi-plans` expects vs. what the profile provides
@@ -212,7 +257,8 @@ The `.. important::` blocks across `smi-plans` modules reference these globals. 
 
 | Plans expect | Status | Evidence / action |
 |---|---|---|
-| `piezo`, `stage` (`.x/.y/.z/.th`) | ✅ exist, clean | `smibase/manipulators.py:10,12` |
+| `piezo` (`.x/.y/.z/.th`) | ✅ exist, clean, **unchanged** | SmarAct fine stage still present; `smibase/manipulators.py:12`. |
+| `stage` (`.x/.y/.z/.th`) | ⚠️ **coarse stage replaced (hexapod→Huber)** | `stage` is now the Huber coarse stage; confirm axis set + phi attribute. See §4.2. |
 | `energy` (`bps.mv(energy, eV)`, `{energy_energy}`) | ✅ works (with internal debt) | `smibase/energy.py:6`; see §4.3 |
 | `xbpm2/3.sumX`, `pin_diode`, `pdcurrent2` | ✅ recordable | `smibase/electrometers.py` |
 | `att2_9`, `att2_*` | ✅ exist | `smibase/attenuators.py:30` |
@@ -222,7 +268,7 @@ The `.. important::` blocks across `smi-plans` modules reference these globals. 
 | Lakeshore `ls.output1.mv_temp`, `ls.input_A_celsius` | ✅ exist | `technique_C` `lakeshore_heater()` works today |
 | Linkam `LThermal.setTemperature/.on/.temperature` | ⚠️ exist but `.put()/.get()` debt | retire via `temperature_current` (§4.4) |
 | `pil2M_pos` (SDD `.z`) | ⚠️ **name mismatch** | profile defines **`pil2m_pos`** (lowercase). Reconcile casing. |
-| **`prs`** (φ; CD-SAXS/tomography/XRR) | ❌ **MISSING** | Used by `technique_I/J/K` and `_compose.motor_axis("prs", …)`. Only commented/checkpoint refs in the profile → would `NameError`. **Confirm with staff: decommissioned, or just unloaded?** |
+| **`prs`** (φ; CD-SAXS/tomography/XRR) | ❌ **SUPERSEDED by Huber phi axis** | The old `prs` is gone (hexapod→Huber swap). Used by `technique_I/J/K` and `_compose.motor_axis("prs", …)` → **repoint to the Huber phi axis** (e.g. `stage.phi`), do **not** re-add `prs`. Confirm the exact attribute with staff. |
 | `pil300KW` (WAXS) | ❌ missing (commented out) | `smiclasses/pilatus.py:283-302` |
 | `rayonix` (MAXS) | ❌ missing | no class/instance |
 | `saxs_waxs_dets` | n/a (provided by `smi_plans._core`) | not a profile global — clarified to avoid a false "missing" |
@@ -337,10 +383,13 @@ These are already message-pure generators and are the **refactoring templates** 
 1. **The device layer is ~80% tenet-ready.** Motion, energy, flux, detectors, attenuators are
    real ophyd objects plans can drive; the *good patterns* (§7) already exist.
 2. **A short, concrete debt list (§8 Critical)** — humidity, Linkam, exposure-time, fast shutter,
-   `prs` — is what currently forces `smi-plans` into `_devices.py` wrappers or blocks whole
-   techniques. Fixing those seven items has outsized payoff and directly retires `DEVICE_DEBT.md`
-   entries.
+   the Huber-phi repoint — is what currently forces `smi-plans` into `_devices.py` wrappers or
+   blocks whole techniques. Fixing those items has outsized payoff and directly retires
+   `DEVICE_DEBT.md` entries.
 3. **The structure problem is real but separable from the debt.** The `smibase/smiclasses` axis
    is wrong for the 7 logic modules and is circular; 23 `user_ns` grabs make it un-importable.
    Packaging is worthwhile, but should be done in **hygiene-first, beamline-safe phases** so
    device fixes can land independently — see `STARTUP_RESTRUCTURE_PLAN.md`.
+4. **Queueserver readiness is gated on the same cleanup** (specifically the Phase-4 instances
+   factory that removes the `get_ipython()` grabs) plus four QS-specific artifacts, and benefits
+   from moving config into the process-shared Redis dict — both detailed in the restructure plan.
