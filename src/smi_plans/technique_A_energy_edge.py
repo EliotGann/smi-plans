@@ -143,13 +143,15 @@ def nexafs_run(name, energies, *, t=2.0, dets=None, reads=None, geometry="transm
     idx = {"i": 0}
 
     def _per_point():
-        energy_direction.put("up" if idx["i"] < n_up else "down")
+        yield from bps.mv(energy_direction, "up" if idx["i"] < n_up else "down")
         idx["i"] += 1
         if flux_signal is not None and flux_threshold is not None:
             tries = 0
-            while flux_signal.get() < flux_threshold and tries < 3:
+            flux = yield from bps.rd(flux_signal)               # read I0 via a message
+            while flux < flux_threshold and tries < 3:
                 yield from bps.mv(energy, energy.position)      # noqa: F821 (re-seek)
                 yield from bps.sleep(settle)
+                flux = yield from bps.rd(flux_signal)
                 tries += 1
         else:
             yield from bps.null()
@@ -162,7 +164,7 @@ def nexafs_run(name, energies, *, t=2.0, dets=None, reads=None, geometry="transm
         yield from bps.mv(pin_diode.averaging_time, t)         # noqa: F821
         if atten_in is not None:
             yield from atten_in()
-        energy_direction.put("up")
+        yield from bps.mv(energy_direction, "up")
 
     plan = acquire(name, dets, [e_axis], reads=all_reads, setup=_setup,
                    geometry=geometry, scan_name="nexafs_energy_sweep",

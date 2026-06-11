@@ -109,7 +109,7 @@ def potential_point(dets, reads, applied_sig, *, readback=None, settle=0.0,
     if readback is not None:
         extra.append(readback)
     if elapsed_sig is not None and t0 is not None:
-        elapsed_sig.put(time.monotonic() - t0)
+        yield from bps.mv(elapsed_sig, time.monotonic() - t0)
         extra.append(elapsed_sig)
     yield from bps.trigger_and_read(list(dets) + list(reads) + extra)
 
@@ -193,7 +193,7 @@ def potential_step_run(name, potentials, *, set_potential, potential_readback=No
     # equilibrates.  The measured ``potential_readback`` (if given) is recorded each event.
     def _set(v):
         yield from set_potential(v)
-        potential_v.put(float(v))
+        yield from bps.mv(potential_v, float(v))
         if equilibration:
             yield from bps.sleep(equilibration)
 
@@ -313,10 +313,10 @@ def operando_kinetics_run(name, hold_potential, *, set_potential, potential_read
     def _frame(i):
         if i > 0:
             yield from bps.sleep(period)
-        frame_index.put(int(i))
+        yield from bps.mv(frame_index, int(i))
 
     def _stamp():
-        elapsed.put(time.monotonic() - clk["t0"])
+        yield from bps.mv(elapsed, time.monotonic() - clk["t0"])
         yield from bps.null()
 
     time_kinetics_axis = ScanAxis("time", list(range(n_frames)), move=_frame,
@@ -327,7 +327,7 @@ def operando_kinetics_run(name, hold_potential, *, set_potential, potential_read
         if atten_in is not None:
             yield from atten_in()
         yield from set_potential(hold_potential)
-        potential_v.put(float(hold_potential))
+        yield from bps.mv(potential_v, float(hold_potential))
         if equilibration:
             yield from bps.sleep(equilibration)
         clk["t0"] = time.monotonic()

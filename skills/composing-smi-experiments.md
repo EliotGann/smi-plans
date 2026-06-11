@@ -156,13 +156,21 @@ Worked CROSS-CONCERN combinations are in `smi_plans.recipes_combined` (read thes
 1. ONE run per logical sample (use `acquire` / a preset / `multi_sample_run`) — never one run
    per data point (`bp.count` in nested loops is the legacy anti-pattern).
 2. Context recorded as devices/Signals in the event stream (or `baseline` if constant) — never
-   `.get()`/`.position` into a filename string.
-3. Filename = `{recorded_field}` tokens (auto-built by `acquire`, or via `_core.fname`). Anything
-   in the filename MUST be in the read list.
+   `.get()`/`.position` into a filename string. Keep the values the user cares about *also* as a
+   structured dict via `acquire(..., user_hints={...})` → `md['user_hints']` (a queryable bundle
+   of hints; analysis need not parse the filename).
+3. Filename = `{recorded_field}` tokens (auto-built by `acquire`, or via `_core.fname`). It is a
+   *convenience* derived from recorded data — never the source of truth. Anything in the
+   filename MUST be in the read list.
 4. Intent via `md={}` — never `sample_id(...)` / `RE.md` mutation.
-5. Plans are generators end-to-end — never `RE()` inside a plan, never `cam.acquire.put` +
-   busy-wait.
-6. Slow / in-vacuum axes (`waxs.arc`, `prs`, temperature) outermost.
+5. **Plans contain ONLY messages — never `.put()`/`.get()`/`.set()`.** Set with
+   `yield from bps.mv(sig, val)`; read for a decision with `x = yield from bps.rd(sig)`. If a
+   value comes from non-message hardware (a function like `readHumidity()`, a method like
+   `LThermal.temperature()`), wrap it as a `bps.rd`-able Signal in `smi_plans._devices` and
+   **fix the ophyd device** — don't call it inline (see `docs/DEVICE_DEBT.md`).
+6. Plans are generators end-to-end — never `RE()` inside a plan, never `cam.acquire.put` +
+   busy-wait. (User prompts go through `bps.input_plan`.)
+7. Slow / in-vacuum axes (`waxs.arc`, `prs`, temperature) outermost.
 
 ## Verifying a composed plan WITHOUT hardware
 

@@ -74,6 +74,7 @@ import time
 from ._samples import SampleList
 from ._core import (one_sample_run, goto_sample, saxs_waxs_dets, fname, merge_md)
 from ._compose import acquire, nest_axes, ScanAxis, SPEED_SLOW, SPEED_FAST
+from ._devices import humidity_signal
 from ._preprocessors import (ensure_in_wrapper, cleanup_wrapper, baseline_wrapper,
                              fresh_spot_wrapper)
 
@@ -145,13 +146,16 @@ def set_rh(target, *, dry_flow=None, wet_flow=None, total_flow=5.0, tol=2.0,
     setWetFlow(wet)                                              # noqa: F821
     setDryFlow(dry)                                             # noqa: F821
 
+    # DEVICE DEBT: readHumidity() is a function, not an ophyd signal; humidity_signal wraps it
+    # so the equilibration poll reads it via a message (bps.rd). See docs/DEVICE_DEBT.md
+    rh_live = humidity_signal(readHumidity)                      # noqa: F821
     waited = 0.0
     while waited < timeout:
         try:
-            rh_now = float(readHumidity(verbosity=0))           # noqa: F821
+            rh_now = yield from bps.rd(rh_live)
         except Exception:
             rh_now = None
-        if rh_now is not None and abs(rh_now - float(target)) <= tol:
+        if rh_now is not None and abs(float(rh_now) - float(target)) <= tol:
             break
         yield from bps.sleep(poll)
         waited += poll
@@ -165,19 +169,25 @@ def set_rh(target, *, dry_flow=None, wet_flow=None, total_flow=5.0, tol=2.0,
 def rh_point(dets, reads, rh_sig, *, settle=0.0, elapsed_sig=None, t0=None):
     """Read the live humidity into ``rh_sig`` and record ONE event (so ``{rh}`` resolves).
 
-    ``rh_sig`` is a ``Signal``; its value is set from ``readHumidity()`` here and then read, so
-    the *recorded* humidity (not a string) drives the ``{rh}`` filename token.  If
+    ``rh_sig`` is a ``Signal``; its value is set (message-based) from the live humidity here and
+    then read, so the *recorded* humidity (not a string) drives the ``{rh}`` filename token.  If
     ``elapsed_sig``/``t0`` are given, the elapsed time is also stamped (for kinetics).
+
+    DEVICE DEBT: readHumidity() is a function, not an ophyd signal; humidity_signal wraps it so
+    the live value is read via a message (bps.rd) and mirrored onto ``rh_sig`` via bps.mv.
+    See docs/DEVICE_DEBT.md
     """
     if settle:
         yield from bps.sleep(settle)
+    rh_live = humidity_signal(readHumidity)                     # noqa: F821
     try:
-        rh_sig.put(float(readHumidity(verbosity=0)))            # noqa: F821
+        live = yield from bps.rd(rh_live)
+        yield from bps.mv(rh_sig, float(live))
     except Exception:
         pass                                                    # keep last value on a read glitch
     extra = [rh_sig]
     if elapsed_sig is not None and t0 is not None:
-        elapsed_sig.put(time.monotonic() - t0)
+        yield from bps.mv(elapsed_sig, time.monotonic() - t0)
         extra.append(elapsed_sig)
     yield from bps.trigger_and_read(list(dets) + list(reads) + extra)
 
@@ -240,7 +250,10 @@ def rh_step_series_run(name, rh_setpoints, *, measure_at_rh=1, t=1.0, dets=None,
         reads = [energy, waxs, xbpm2, xbpm3]                     # noqa: F821
 
     # Live RH (changes -> stream) and the setpoint (constant per event -> recorded too).
-    rh = Signal(name="rh", value=0.0)                          # noqa: F821
+    # DEVICE DEBT: readHumidity() is a function, not an ophyd signal; humidity_signal wraps it
+    # as a bps.rd-able Signal named "rh", so it reads live at trigger_and_read time and {rh}
+    # resolves from the recorded stream -- no .put() stamping needed. See docs/DEVICE_DEBT.md
+    rh = humidity_signal(readHumidity, name="rh")              # noqa: F821
     rh_setpoint = Signal(name="rh_setpoint", value=0.0)        # noqa: F821
 
     base = list(baseline) if baseline else []
@@ -254,23 +267,14 @@ def rh_step_series_run(name, rh_setpoints, *, measure_at_rh=1, t=1.0, dets=None,
 
     # RH is the (outer, SLOW) scan axis: its `move` reuses this file's own :func:`set_rh` MFC
     # ramp + equilibration and records the *commanded* setpoint (the `rh_setpoint` Signal, also
-    # carried in the baseline as a constant).  The live RH is stamped fresh from
-    # ``readHumidity()`` just before each event by the inner axis (reproducing :func:`rh_point`).
+    # carried in the baseline as a constant).  The live RH is read fresh at each event because
+    # `rh` (a humidity_signal) reads live in trigger_and_read.
     def _set(sp):
         yield from set_rh(sp, tol=equilibration_tol, timeout=equilibration_timeout)
-        rh_setpoint.put(float(sp))
+        yield from bps.mv(rh_setpoint, float(sp))
 
     rh_axis_local = ScanAxis("rh", list(rh_setpoints), move=_set, record=rh_setpoint,
                              speed=SPEED_SLOW)
-
-    def _stamp_live_rh():
-        # Refresh the recorded live-RH Signal from the controller just before each event so the
-        # *recorded* humidity (not a string) drives {rh}.  This is :func:`rh_point`'s pre-read.
-        try:
-            rh.put(float(readHumidity(verbosity=0)))             # noqa: F821
-        except Exception:
-            pass                                                 # keep last value on a glitch
-        yield from bps.null()
 
     def _setup():
         if atten_in is not None:
@@ -301,9 +305,10 @@ def rh_step_series_run(name, rh_setpoints, *, measure_at_rh=1, t=1.0, dets=None,
                               md=md, baseline=base)
     else:
         # DEFAULT: take ``measure_at_rh`` events at each equilibrated setpoint -- an inner
-        # frame axis (no frame token recorded) whose per-point stamps the live RH.
+        # frame axis (no frame token recorded); the live RH is read live at each event because
+        # `rh` is in `reads`.
         frames = ScanAxis("frame", list(range(int(measure_at_rh))), record=None,
-                          per_point=_stamp_live_rh, reads=[rh], settle=settle,
+                          reads=[rh], settle=settle,
                           speed=SPEED_FAST)
         plan = acquire(name, dets, [rh_axis_local, frames], reads=reads, setup=_setup,
                        geometry=geometry, scan_name="rh_step_series", md=md, baseline=base,
@@ -357,7 +362,10 @@ def rh_swelling_kinetics_run(name, target_rh, *, n_frames=None, duration=None, p
     if reads is None:
         reads = [energy, waxs, xbpm2, xbpm3]                     # noqa: F821
 
-    rh = Signal(name="rh", value=0.0)                          # noqa: F821
+    # DEVICE DEBT: readHumidity() is a function, not an ophyd signal; humidity_signal wraps it
+    # as a bps.rd-able Signal named "rh" so it reads live at trigger_and_read time (no .put()
+    # stamping needed) and {rh} resolves from the recorded stream. See docs/DEVICE_DEBT.md
+    rh = humidity_signal(readHumidity, name="rh")              # noqa: F821
     rh_setpoint = Signal(name="rh_setpoint", value=float(target_rh))  # noqa: F821
     elapsed = Signal(name="elapsed_s", value=0.0)              # noqa: F821
     frame_index = Signal(name="frame_index", value=0)         # noqa: F821
@@ -386,26 +394,21 @@ def rh_swelling_kinetics_run(name, target_rh, *, n_frames=None, duration=None, p
     clk = {}
 
     def _stamp():
-        # live RH + elapsed are stamped fresh just before each event (reproducing rh_point):
-        try:
-            rh.put(float(readHumidity(verbosity=0)))             # noqa: F821
-        except Exception:
-            pass
-        elapsed.put(time.monotonic() - clk["t0"])
-        yield from bps.null()
+        # elapsed is stamped fresh just before each event; live RH reads live in the event.
+        yield from bps.mv(elapsed, time.monotonic() - clk["t0"])
 
     if n_frames is not None:
         # FIXED-COUNT: the scan axis is TIME -- a custom :class:`_compose.ScanAxis` over the
         # frame indices.  Its `move` paces the series (the inter-frame ``period`` sleep precedes
         # each frame after the first, matching the legacy "measure then sleep(period)" order)
-        # and stamps the frame index; `per_point` stamps the live RH + elapsed time just before
-        # the event.  `rh`, `elapsed` and `frame_index` are recorded each event.
+        # and stamps the frame index; `per_point` stamps the elapsed time just before the event.
+        # `rh` (live), `elapsed` and `frame_index` are recorded each event.
         def _frame(i):
             if "t0" not in clk:
                 clk["t0"] = time.monotonic()
             if i > 0:
                 yield from bps.sleep(period)
-            frame_index.put(int(i))
+            yield from bps.mv(frame_index, int(i))
 
         time_kinetics_axis = ScanAxis("time", list(range(int(n_frames))), move=_frame,
                                       record=None, per_point=_stamp,
@@ -421,19 +424,16 @@ def rh_swelling_kinetics_run(name, target_rh, *, n_frames=None, duration=None, p
     else:
         # SPECIAL CASE: ``duration``-bounded (open-ended) series -- the frame count is unknown,
         # so a fixed-value ScanAxis does not fit.  Drive it with the same composition envelope
-        # (:func:`_core.one_sample_run`) and an open-ended frame loop that stamps live RH +
-        # elapsed and paces by ``period`` -- behaviorally identical to the legacy while-loop.
+        # (:func:`_core.one_sample_run`) and an open-ended frame loop that stamps elapsed +
+        # frame index (live RH reads live in the event) and paces by ``period`` -- behaviorally
+        # identical to the legacy while-loop.
         def _body():
             yield from _setup()
             clk["t0"] = time.monotonic()
             i = 0
             while (time.monotonic() - clk["t0"]) < duration:
-                frame_index.put(i)
-                try:
-                    rh.put(float(readHumidity(verbosity=0)))     # noqa: F821
-                except Exception:
-                    pass
-                elapsed.put(time.monotonic() - clk["t0"])
+                yield from bps.mv(frame_index, i)
+                yield from bps.mv(elapsed, time.monotonic() - clk["t0"])
                 yield from bps.trigger_and_read(
                     list(dets) + list(reads) + [rh_setpoint, frame_index, rh, elapsed])
                 i += 1

@@ -214,8 +214,10 @@ def beam_loss_reseek_wrapper(plan, flux_signal, threshold, recover, *, max_tries
         if msg.command == "create":
             def _head():
                 tries = 0
-                while flux_signal.get() < threshold and tries < max_tries:
+                flux = yield from bps.rd(flux_signal)      # read I0 via a message (no .get())
+                while flux < threshold and tries < max_tries:
                     yield from recover()
+                    flux = yield from bps.rd(flux_signal)
                     tries += 1
                 yield msg
             return _head(), None

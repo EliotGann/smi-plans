@@ -143,9 +143,11 @@ def wait_for_printer_fire(trigger, monitor, *, poll=0.5, ready=None, timeout=Non
     if ready is not None:
         yield from bps.mv(ready, 1)                                # arm: tell printer we're ready
     while True:
-        if monitor.get() != 1:
+        mon = yield from bps.rd(monitor)                           # read via a message
+        if mon != 1:
             return False                                           # master ended monitoring
-        if trigger.get() == 1:
+        trig = yield from bps.rd(trigger)                          # read via a message
+        if trig == 1:
             return True                                            # printer fired
         if timeout is not None and (time.time() - t0) > timeout:
             return False
@@ -254,7 +256,7 @@ def printer_triggered_run(name, *, n_events=None, until_stopped=False, t=1.0, de
             if not fired:
                 break                                              # master ended monitoring
             count += 1
-            print_event.put(count)
+            yield from bps.mv(print_event, count)
             # Record ONE frame for this print event into the single open run.
             yield from bps.trigger_and_read(list(dets) + list(reads))
             # Acknowledge the fire so the next wait sees the NEXT fire (clear bi4).
@@ -336,7 +338,7 @@ def print_crystallization_followup_run(name, *, duration_s=1800, waxs_arc=(0, 13
         while (time.time() - t0) <= duration_s:
             for wa in arc_positions:
                 yield from bps.mv(waxs, wa)                        # noqa: F821
-                elapsed.put(float(time.time() - t0))
+                yield from bps.mv(elapsed, float(time.time() - t0))
                 yield from bps.trigger_and_read(list(dets) + list(reads))
             cycle += 1
             print("crystallization sweep cycle #{} (t={:.0f}s)".format(cycle, time.time() - t0))

@@ -118,10 +118,10 @@ def time_series_point(dets, reads, elapsed_sig, t0, *, frame_index_sig=None, fra
     the whole point of the archetype.  ``reads`` is the list of extra readables (beyond
     ``dets``) recorded each event.
     """
-    elapsed_sig.put(time.monotonic() - t0)
+    yield from bps.mv(elapsed_sig, time.monotonic() - t0)
     extra = [elapsed_sig]
     if frame_index_sig is not None and frame_i is not None:
-        frame_index_sig.put(int(frame_i))
+        yield from bps.mv(frame_index_sig, int(frame_i))
         extra.append(frame_index_sig)
     yield from bps.trigger_and_read(list(dets) + list(reads) + extra)
 

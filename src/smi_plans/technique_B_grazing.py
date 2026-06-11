@@ -207,7 +207,7 @@ def giwaxs_bar_arc_economy(samples, *, align, align_angle=0.1, waxs_arc=(0, 20),
         reads = [energy, waxs, xbpm2, xbpm3]                   # noqa: F821
         for ai in angles:
             yield from bps.mv(th_axis, th0 + ai)
-            incident_angle.put(float(ai))
+            yield from bps.mv(incident_angle, float(ai))
             yield from bps.trigger_and_read(list(dets) + reads + [incident_angle])
         yield from bps.mv(th_axis, th0)
 

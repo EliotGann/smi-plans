@@ -84,12 +84,13 @@ class Heater(object):
         ``lambda T: ls.output1.mv_temp(T + 273.15)`` for Lakeshore (Kelvin),
         or a small plan that does ``LThermal.setTemperature(T); LThermal.on()`` for Linkam.
     readback : ophyd Signal
-        Live temperature read-back recorded in the primary stream.  This is the device whose
+        Live temperature read-back recorded in the primary stream and read (via ``bps.rd``)
+        for the equilibration loop's convergence test.  This is the device whose
         ``{<name>_value}`` token goes in the filename (e.g. ``ls.input_A_celsius`` ->
-        ``{ls_input_A_celsius_value}`` ... read its data-key once at the beamline).
-    read_value : callable() -> float, optional
-        Plain function returning the current temperature (controller native units) for the
-        equilibration loop's convergence test.  Defaults to ``readback.get()``.
+        ``{ls_input_A_celsius_value}`` ... read its data-key once at the beamline).  It must be
+        a ``bps.rd``-able Signal in the *caller-facing* units (conventionally Celsius); for a
+        controller whose live temperature is only a plain method, wrap it with
+        ``smi_plans._devices.linkam_temperature_signal`` so it is a proper Signal.
     setpoint_sig : ophyd Signal, optional
         The *setpoint* signal/device to record in the **baseline** (constant per event but
         worth keeping).  Optional.
@@ -97,36 +98,23 @@ class Heater(object):
         Human label ("degC" / "K") for log lines only.
     """
 
-    def __init__(self, set_plan, readback, *, read_value=None, setpoint_sig=None,
-                 units="degC"):
+    def __init__(self, set_plan, readback, *, setpoint_sig=None, units="degC"):
         self.set_plan = set_plan
         self.readback = readback
-        self._read_value = read_value if read_value is not None else (lambda: readback.get())
         self.setpoint_sig = setpoint_sig
         self.units = units
-
-    def read_value(self):
-        """Current temperature (controller native units) for the convergence test."""
-        return self._read_value()
-
-    def sync_readback(self):
-        """Mirror the controller reading onto the recordable ``readback`` Signal if needed.
-
-        For Lakeshore the read-back is already an ophyd device that updates itself; for the
-        Linkam wrapper we mirror ``LThermal.temperature()`` onto the artificial Signal so the
-        recorded value matches the convergence test.  Safe to call before each event.  (Also
-        available as the module-level :func:`_sync_readback` for back-compat.)
-        """
-        _sync_readback(self)
 
 
 def lakeshore_heater(*, kelvin_setpoint=True, celsius_readback=True):
     """Build a :class:`Heater` for the Lakeshore ``ls`` controller.
 
-    Uses ``ls.output1.mv_temp`` (a plan) for the setpoint and ``ls.input_A`` (Kelvin) for the
-    convergence test.  By default the *recorded* read-back is ``ls.input_A_celsius`` (the
-    device the best 2026 legacy plans add to ``dets``); pass ``celsius_readback=False`` to
-    record ``ls.input_A`` (Kelvin) instead.
+    Uses ``ls.output1.mv_temp`` (a plan) for the setpoint.  By default the *recorded* read-back
+    is ``ls.input_A_celsius`` (the device the best 2026 legacy plans add to ``dets``) and it is
+    also what the equilibration loop reads (via ``bps.rd``) for its convergence test -- so the
+    convergence test and the recorded value agree, both in Celsius (matching the caller-facing
+    Celsius setpoint).  Pass ``celsius_readback=False`` to record ``ls.input_A`` (Kelvin)
+    instead (the convergence test then reads Kelvin -- only meaningful if you also work in
+    Kelvin setpoints).
 
     The setpoint command goes through Kelvin (``T + 273.15``) when ``kelvin_setpoint`` -- the
     universal legacy convention -- so callers pass Celsius everywhere.
@@ -142,9 +130,8 @@ def lakeshore_heater(*, kelvin_setpoint=True, celsius_readback=True):
         except Exception:
             pass
 
-    # Convergence test must compare in the controller's native (Kelvin) units.
+    # The equilibration loop reads `readback` (Celsius by default) via bps.rd for convergence.
     return Heater(_set, rb,
-                  read_value=(lambda: ls.input_A.get()),              # noqa: F821 (Kelvin)
                   setpoint_sig=getattr(ls, "ch1_sp", None),           # noqa: F821
                   units="degC")
 
@@ -152,20 +139,24 @@ def lakeshore_heater(*, kelvin_setpoint=True, celsius_readback=True):
 def linkam_heater():
     """Build a :class:`Heater` for the Linkam ``LThermal`` controller (Celsius throughout).
 
-    Setpoint is ``LThermal.setTemperature(T)`` followed by ``LThermal.on()``; the live
-    read-back ``LThermal.temperature()`` is wrapped in a tiny ``Signal`` so it can be recorded
-    (its ``{linkam_temperature_value}`` token then resolves in the filename).
+    Setpoint is ``LThermal.setTemperature(T)`` followed by ``LThermal.on()``.  The live
+    read-back ``LThermal.temperature()`` is exposed through a proper ``bps.rd``-able Signal
+    (``smi_plans._devices.linkam_temperature_signal``) so the equilibration loop and
+    ``trigger_and_read`` get the *current* temperature via messages -- no ``.get()`` in a plan.
+
+    DEVICE DEBT: ``LThermal.temperature()`` is a plain method, not an ophyd signal.  The wrapper
+    keeps the plan message-pure today; the proper fix is a real ``EpicsSignalRO`` temperature
+    component on the Linkam device.  See ``docs/DEVICE_DEBT.md``.
     """
-    sig = Signal(name="linkam_temperature", value=0.0)                # noqa: F821 (global)
+    from ._devices import linkam_temperature_signal
+    rb = linkam_temperature_signal(LThermal, name="linkam_temperature")  # noqa: F821
 
     def _set(T):
         LThermal.setTemperature(T)                                    # noqa: F821
         LThermal.on()                                                 # noqa: F821
         yield from bps.null()                                         # keep it a generator
 
-    return Heater(_set, sig,
-                  read_value=(lambda: LThermal.temperature()),        # noqa: F821
-                  units="degC")
+    return Heater(_set, rb, units="degC")
 
 
 # ---------------------------------------------------------------------------
@@ -209,16 +200,16 @@ def goto_temperature(heater, setpoint, *, tol=1.0, poll=10.0, timeout=7200.0,
     yield from heater.set_plan(setpoint)
 
     start = time.time()
-    temp = heater.read_value()
-    # Refresh the recordable read-back signal with the controller's native reading.
-    _sync_readback(heater)
+    # Read the live temperature via a message (bps.rd) for the convergence test -- the
+    # recordable ``readback`` Signal is the same value that lands in the stream, so no separate
+    # native read / mirror step is needed (keeps the plan message-pure).
+    temp = yield from bps.rd(heater.readback)
     while abs(temp - setpoint) > tol:
         if log:
             print("dT = {:.1f} {} (T={:.1f}, set={:.1f}); waiting {:.0f}s"
                   .format(abs(temp - setpoint), heater.units, temp, setpoint, poll))
         yield from bps.sleep(poll)
-        temp = heater.read_value()
-        _sync_readback(heater)
+        temp = yield from bps.rd(heater.readback)
         if time.time() - start > timeout:
             if log:
                 print("goto_temperature: timeout after {:.1f} min; proceeding at {:.1f}"
@@ -234,22 +225,6 @@ def goto_temperature(heater, setpoint, *, tol=1.0, poll=10.0, timeout=7200.0,
         yield from bps.sleep(soak)
 
 
-def _sync_readback(heater):
-    """Push the controller's native read-back onto the recordable ``Signal`` (Linkam case).
-
-    For Lakeshore the read-back *is* an ophyd device already (``ls.input_A_celsius``) and
-    updates itself; for the Linkam wrapper we mirror ``LThermal.temperature()`` onto our
-    artificial ``Signal`` so the value recorded matches the convergence test.
-    """
-    rb = heater.readback
-    if hasattr(rb, "put") and not hasattr(rb, "read_configuration"):
-        # Heuristic: an artificial Signal we own (no full Device API) -> mirror the reading.
-        try:
-            rb.put(float(heater.read_value()))
-        except Exception:
-            pass
-
-
 # ---------------------------------------------------------------------------
 # Inner per-temperature measurement
 # ---------------------------------------------------------------------------
@@ -262,7 +237,8 @@ def temperature_point(dets, reads, heater, *, settle=0.0):
     """
     if settle:
         yield from bps.sleep(settle)
-    _sync_readback(heater)
+    # ``heater.readback`` is read live by the RunEngine in trigger_and_read, so the recorded
+    # temperature is the current one -- no mirror step needed (message-pure).
     yield from bps.trigger_and_read(list(dets) + list(reads) + [heater.readback])
 
 
@@ -366,7 +342,7 @@ def temperature_ramp_run(name, heater, setpoints, *, t=1.0, dets=None, reads=Non
             yield from align()
         if settle:
             yield from bps.sleep(settle)
-        _sync_readback(heater)
+        # heater.readback is read live in the event (axis `reads`); no mirror step needed.
         yield from bps.null()
 
     t_axis = ScanAxis("temperature", list(setpoints), move=_goto,
@@ -463,12 +439,12 @@ def isothermal_kinetics_run(name, heater, setpoint, *, n_frames=60, period=10.0,
             if remaining > 0:
                 yield from bps.sleep(remaining)
             clk["fs"] = time.time()
-        elapsed.put(round(clk["fs"] - clk["t0"], 3))
+        yield from bps.mv(elapsed, round(clk["fs"] - clk["t0"], 3))
 
     def _per_point():
         if settle:
             yield from bps.sleep(settle)
-        _sync_readback(heater)
+        # heater.readback is read live in the event (axis `reads`); no mirror step needed.
         yield from bps.null()
 
     time_kinetics_axis = ScanAxis("time", list(range(int(n_frames))), move=_frame,

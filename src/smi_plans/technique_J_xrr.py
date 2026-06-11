@@ -167,7 +167,7 @@ def xrr_point(th_axis, th_value, dets, reads, incident_angle_sig, *, settle=1.0,
     yield from bps.mv(th_axis, commanded)
     if settle:
         yield from bps.sleep(settle)
-    incident_angle_sig.put(float(th_value))
+    yield from bps.mv(incident_angle_sig, float(th_value))
     yield from bps.trigger_and_read(list(dets) + list(reads) + [incident_angle_sig])
 
 
@@ -380,7 +380,7 @@ def xrr_liquid_run(name, angles, *, piezo_y_origin, bdm_th_origin, bdm_sample_di
             if atten_ladder is not None:
                 yield from atten_ladder(2 * alpha)                 # ladder vs 2*alpha (BDM)
             yield from bps.sleep(settle)
-            incident_angle.put(float(alpha))
+            yield from bps.mv(incident_angle, float(alpha))
             yield from bps.trigger_and_read(list(dets) + list(reads) + [incident_angle])
         yield from _move(0)                                        # return liquid + BDM to origin
 

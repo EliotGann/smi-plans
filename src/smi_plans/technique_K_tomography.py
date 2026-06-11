@@ -255,7 +255,7 @@ def texture_pole_figure_run(name, prs_range=(-90, 90, 91), *, ai0=0.0, ai=0.0, t
 
     def _plan():
         yield from bps.mv(th_axis, ai0 + ai)                       # set grazing incidence once
-        incident_angle.put(float(ai))
+        yield from bps.mv(incident_angle, float(ai))
         if len(arc_vals) > 1:
             # prs (in-plane) x waxs.arc texture map, ONE run (Kang grid_scan).
             wa0, wa1 = arc_vals[0], arc_vals[-1]

@@ -65,20 +65,21 @@ def test_manual_step_emits_input_and_records(sim, inject):
                      reads=[sim.energy],
                      setup=lambda: C.manual_step("Load sample", signals=[thickness]),
                      baseline=[thickness])
-    msgs = sim.messages(plan)
-    cmds = [m.command for m in msgs]
+    # interactive plans can't be driven by a RunEngine here (input prompts); inspect the
+    # message stream directly.  No bps.rd in this plan, so list() is faithful for counting.
+    cmds = [m.command for m in sim.messages_only(plan)]
     assert cmds.count("input") == 2          # value prompt + confirm
-    sim.assert_one_run(msgs)
+    assert cmds.count("open_run") == cmds.count("close_run") == 1
+    assert cmds.count("create") == cmds.count("save")
 
 
 def test_manual_axis_enumerated(sim, inject):
     C = inject("smi_plans._compose")
     temp = C.manual_axis("temp_manual", "Dial the hot stage to", values=[35, 50, 65])
-    msgs = sim.messages(C.acquire("S", [sim.pil900KW], [temp, C.energy_axis([2480])],
-                                  reads=[sim.energy]))
-    cmds = [m.command for m in msgs]
+    cmds = [m.command for m in sim.messages_only(
+        C.acquire("S", [sim.pil900KW], [temp, C.energy_axis([2480])], reads=[sim.energy]))]
     assert cmds.count("input") == 3
-    assert sim.primary_events(msgs) == 3
+    assert cmds.count("save") == 3           # 3 manual temps * 1 energy
 
 
 # ---------------------------------------------------------------------------

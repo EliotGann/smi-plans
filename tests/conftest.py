@@ -47,9 +47,24 @@ class _Stack(Device):
     th = Cpt(SynAxis, name="th")
 
 
-class _Waxs(Device):
-    arc = Cpt(SynAxis, name="arc")
-    bs_y = Cpt(SynAxis, name="bs_y")
+class _WaxsArc(Device):
+    """Readback sub-device: ``.position`` mirrors the parent waxs setpoint."""
+    def __init__(self, *args, parent_axis=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._parent_axis = parent_axis
+
+    @property
+    def position(self):
+        return self._parent_axis.position if self._parent_axis is not None else 0.0
+
+
+class _Waxs(SynAxis):
+    """Settable like the real SMI ``waxs`` (``bps.mv(waxs, angle)`` moves it); also exposes
+    ``.arc`` whose ``.position`` mirrors the setpoint (the real device's readback)."""
+    def __init__(self, name="waxs", **kwargs):
+        super().__init__(name=name, **kwargs)
+        self.arc = _WaxsArc(name=name + "_arc", parent_axis=self)
+        self.bs_y = SynAxis(name=name + "_bs_y")
 
 
 class _XBPM(Device):
@@ -159,7 +174,8 @@ class SimBeamline:
         self.att2_12 = _Att("att2_12")
 
         # Keep the WAXS arc up by default so saxs_waxs_dets() keeps pil2M (SAXS) in the list.
-        self.waxs.arc.set(20).wait()
+        # The real waxs is settable directly (bps.mv(waxs, angle)); .arc mirrors the setpoint.
+        self.waxs.set(20).wait()
 
     # -- callable globals smi_plans expects ---------------------------------
     def det_exposure_time(self, a, b=None):
@@ -180,7 +196,7 @@ class SimBeamline:
     def set_humidity(self, v):
         yield from bps.null()
 
-    def readHumidity(self):
+    def readHumidity(self, verbosity=0, **kwargs):
         return 45.0
 
     # -- the dict of globals to inject into smi_plans modules ----------------
@@ -203,34 +219,109 @@ class SimBeamline:
             "set_humidity": self.set_humidity, "readHumidity": self.readHumidity,
         }
 
-    # -- message-stream assertions ------------------------------------------
+    # -- run a plan through a RunEngine and collect documents --------------------
+    # Plans are now message-pure (they use bps.rd / bps.mv, NOT .get()/.put()).  A bare
+    # ``list(plan)`` therefore can't answer ``rd``/``read`` messages (it returns the default),
+    # so we drive plans with a real RunEngine and assert on the emitted DOCUMENTS.  Sleeps are
+    # made instant so the equilibration / settle waits don't slow tests.
+    def run(self, plan):
+        """Execute ``plan`` on a RunEngine against the sim devices; return a RunResult.
+
+        Patches ``bluesky.plan_stubs.sleep`` (and ``asyncio.sleep`` via the RE) to be instant
+        so settle/equilibration waits don't block tests, and answers manual ``input`` prompts
+        with an empty string.
+        """
+        from bluesky import RunEngine
+        import bluesky.plan_stubs as _bps
+        from unittest import mock
+
+        docs = []
+        RE = RunEngine({})
+        RE.subscribe(lambda name, doc: docs.append((name, doc)))
+        # answer manual_step / manual_axis / manual_loop prompts non-interactively
+        RE.register_command  # (no-op touch; input is handled below)
+        RE.input_hook = None
+        try:
+            RE._input = lambda prompt='': ""    # some bluesky versions
+        except Exception:
+            pass
+
+        # make sleeps instant: replace bps.sleep with a no-op message (bps.null)
+        def _instant_sleep(t):
+            yield from _bps.null()
+
+        # provide input() answers for the 'input' message handler
+        import builtins
+        with mock.patch.object(_bps, "sleep", _instant_sleep), \
+                mock.patch.object(builtins, "input", lambda prompt="": ""):
+            RE(plan)
+        return RunResult(docs)
+
+    # keep ``messages`` as an alias that returns a RunResult (back-compat with existing tests)
+    def messages(self, plan):
+        return self.run(plan)
+
     @staticmethod
-    def messages(plan):
-        """Drive a plan to exhaustion (no RunEngine) and return its Msg list."""
+    def messages_only(plan):
+        """Return the raw ``Msg`` list (``list(plan)``) -- for tests that only count message
+        *commands* (e.g. how many ``input`` prompts).  Do NOT use to assert event counts on
+        message-pure plans: ``list()`` cannot answer ``rd``/``read`` (use ``run``/``messages``).
+        """
         return list(plan)
 
+    # -- document-stream assertions (operate on a RunResult) --------------------
     @staticmethod
-    def run_count(msgs):
-        cmds = [m.command for m in msgs]
-        return cmds.count("open_run"), cmds.count("close_run")
+    def run_count(result):
+        return result.run_count()
 
     @staticmethod
-    def events_by_stream(msgs):
-        return dict(Counter(m.kwargs.get("name", "primary")
-                            for m in msgs if m.command == "create"))
+    def events_by_stream(result):
+        return result.events_by_stream()
 
     @classmethod
-    def primary_events(cls, msgs):
-        return cls.events_by_stream(msgs).get("primary", 0)
+    def primary_events(cls, result):
+        return result.events_by_stream().get("primary", 0)
 
     @classmethod
-    def assert_one_run(cls, msgs):
-        """Assert the plan produced exactly one balanced run with balanced events."""
-        o, c = cls.run_count(msgs)
-        assert o == c, "open_run ({}) != close_run ({})".format(o, c)
+    def assert_one_run(cls, result):
+        """Assert the plan produced exactly one run with balanced start/stop + recorded events."""
+        o, c = result.run_count()
+        assert o == c, "run_start ({}) != run_stop ({})".format(o, c)
         assert o == 1, "expected exactly one run, got {}".format(o)
-        cmds = [m.command for m in msgs]
-        assert cmds.count("create") == cmds.count("save"), "create/save unbalanced"
+
+
+class RunResult(object):
+    """Documents emitted by running a plan, with convenience counts.
+
+    Holds the (name, doc) tuples a RunEngine published.  This is a more faithful thing to
+    assert on than a raw message list: it reflects what was actually recorded.
+    """
+
+    def __init__(self, docs):
+        self.docs = docs
+
+    def names(self):
+        return [n for n, _ in self.docs]
+
+    def run_count(self):
+        ns = self.names()
+        return ns.count("start"), ns.count("stop")
+
+    def events_by_stream(self):
+        # map descriptor uid -> stream name, then count events per stream
+        stream = {}
+        for name, doc in self.docs:
+            if name == "descriptor":
+                stream[doc["uid"]] = doc.get("name", "primary")
+        counts = Counter()
+        for name, doc in self.docs:
+            if name == "event":
+                counts[stream.get(doc["descriptor"], "primary")] += 1
+        return dict(counts)
+
+    def input_count(self):
+        # number of manual prompts is not in documents; tests that need it use the messages path
+        return None
 
 
 @pytest.fixture

@@ -233,13 +233,13 @@ def attenuator_ladder_run(attenuators, *, name="atten_ladder", t=2.0, dets=None,
         except Exception:
             pass
         # 1) reference frame with no test attenuator in.
-        atten_label.put("none")
+        yield from bps.mv(atten_label, "none")
         yield from bps.sleep(settle)
         yield from bps.trigger_and_read(list(dets) + list(reads))
         # 2) each attenuator in turn: insert -> record -> retract.
         for att in attenuators:
             yield from bps.mv(att, in_cmd)
-            atten_label.put(getattr(att, "name", str(att)))
+            yield from bps.mv(atten_label, getattr(att, "name", str(att)))
             yield from bps.sleep(settle)
             yield from bps.trigger_and_read(list(dets) + list(reads))
             yield from bps.mv(att, out_cmd)

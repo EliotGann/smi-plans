@@ -108,15 +108,18 @@ class ScanAxis(object):
         The points to visit, in order.  ``None`` / empty means a single pass with no move
         (a degenerate axis -- useful so a recipe can "turn off" a dimension uniformly).
     move : callable(value) -> plan, optional
-        How to get to a value.  Default: ``bps.mv(device, value)`` if ``device`` is given.
-        Pass a custom plan for non-trivial moves (e.g. ``goto_temperature`` with
-        equilibration, or "incident angle = th0 + value").
+        How to get to a value.  MUST be a *plan* (a generator-function that ``yield from``\\s
+        messages -- e.g. ``bps.mv``), never a function that does direct ``.put()``/``.set()``.
+        Default: ``bps.mv(device, value)`` if ``device`` is given.  Pass a custom plan for
+        non-trivial moves (e.g. ``goto_temperature`` with equilibration, or
+        "incident angle = th0 + value").
     device : ophyd positioner, optional
         Shortcut: if given and ``move`` is None, the axis does ``bps.mv(device, value)``.
     record : ophyd Signal, optional
-        A Signal ``.put(value)`` at each point so the value is recorded in the primary stream
-        (and thus usable as a ``{record.name}`` filename token).  If you set ``device`` and it
-        is itself a readable you include in ``reads``, you may not need a separate ``record``.
+        A Signal set to ``value`` at each point (via ``bps.mv`` -- a message, never ``.put()``)
+        so the value is recorded in the primary stream (and thus usable as a ``{record.name}``
+        filename token).  If you set ``device`` and it is itself a readable you include in
+        ``reads``, you may not need a separate ``record``.
     settle : float
         Sleep (s) after moving, before descending to the inner axis.
     per_point : callable() -> plan, optional
@@ -155,28 +158,33 @@ class ScanAxis(object):
         return len(self.values) == 0
 
     def move_to(self, value):
-        """Plan: move to ``value`` (custom ``move``, else ``bps.mv(device, value)``).
+        """Plan: move to ``value`` -- ALL via Bluesky messages (no direct ``.put()``).
 
-        The custom ``move`` may be a *plan* (generator-function) or a plain function that just
-        sets some software state (e.g. updates a Signal with no hardware move); both are
-        handled.
+        Resolution order:
+        * a custom ``move`` plan (a generator-function that ``yield from``\\s messages), else
+        * ``yield from bps.mv(device, value)`` if a ``device`` is set, else
+        * nothing to move (a pure "record" axis).
+
+        The ``record`` Signal (if any) is set with ``yield from bps.mv(record, value)`` -- a
+        Signal is settable through the RunEngine, so the value is set *as a message* and will be
+        captured when ``record`` is read.  This keeps the whole axis message-pure (Tenet:
+        plans contain only messages, never ``.put()``).
+
+        A custom ``move`` MUST be a plan (generator).  If you find yourself wanting a plain
+        side-effecting function here, the right fix is a proper settable ophyd device driven by
+        ``bps.mv`` -- see ``smi_plans._devices`` and ``docs/DEVICE_DEBT.md``.
         """
         if self._move is not None:
-            ret = self._move(value)
-            if ret is not None:          # a generator/iterable -> it yields plan messages
-                yield from ret
-            # else: a plain function that already did its (software-only) work
+            yield from self._move(value)
         elif self.device is not None:
             yield from bps.mv(self.device, value)
         # else: nothing to move (a pure "record" axis)
         if self.record is not None:
-            self.record.put(value)
+            yield from bps.mv(self.record, value)     # set the recorded Signal via a message
         if self.settle:
             yield from bps.sleep(self.settle)
         if self.per_point is not None:
-            pp = self.per_point()
-            if pp is not None:
-                yield from pp
+            yield from self.per_point()
 
     def token(self, fmt=None):
         """Convenience: the ``{field}`` filename token for this axis's recorded value.
@@ -263,7 +271,8 @@ def _check_axis_order(axes):
 # The experiment builder
 # ---------------------------------------------------------------------------
 def acquire(name, dets, axes, *, reads=None, setup=None, geometry=None, scan_name="acquire",
-            md=None, baseline=None, name_tokens=None, check_order=True, sample=None):
+            md=None, baseline=None, name_tokens=None, check_order=True, sample=None,
+            user_hints=None):
     """Compose ONE run for ONE sample: setup + nested ``axes`` + ``trigger_and_read``.
 
     This is the compositional heart.  You provide the *beam/q config* (``dets`` + ``reads``),
@@ -301,6 +310,12 @@ def acquire(name, dets, axes, *, reads=None, setup=None, geometry=None, scan_nam
         If True (default), warn when slow axes are nested inside faster ones.
     sample : _samples.Sample, optional
         If given, ``name`` defaults to ``sample.name`` and its ``md`` is merged.
+    user_hints : dict, optional
+        A structured bundle of the values the user considers important, recorded in the run
+        metadata under ``md['user_hints']`` (NOT the reserved bluesky ``hints`` key).  This is
+        the computational-convenience companion to the filename: the same intent that the
+        ``{token}`` filename encodes (and that the axes record in the stream) is *also* kept as
+        a queryable dict, so downstream analysis need not parse names.  Constant per run.
 
     Returns
     -------
@@ -341,9 +356,10 @@ def acquire(name, dets, axes, *, reads=None, setup=None, geometry=None, scan_nam
             yield from setup()
         yield from nest_axes(axes, _measure)
 
+    run_md = merge_md(md, {"user_hints": dict(user_hints)} if user_hints else {})
     return (yield from one_sample_run(
         _body, dets, sample_name=sample_name, scan_name=scan_name,
-        geometry=geometry, md=md, baseline=baseline))
+        geometry=geometry, md=run_md, baseline=baseline))
 
 
 def acquire_bar(samples, dets, axes_for, *, reads=None, setup_for=None, geometry=None,
@@ -396,9 +412,13 @@ def energy_axis(energies, *, settle=2.0, reverse_alternate=False, flux_signal=No
     def _per_point():
         if flux_signal is not None and flux_threshold is not None:
             tries = 0
-            while flux_signal.get() < flux_threshold and tries < max_reseek:
-                yield from bps.mv(energy, energy.position)        # noqa: F821 (re-seek)
+            # read I0 via a message (bps.rd), decide, re-seek -- all message-based
+            flux = yield from bps.rd(flux_signal)
+            while flux < flux_threshold and tries < max_reseek:
+                target = yield from bps.rd(energy)               # noqa: F821 (current energy)
+                yield from bps.mv(energy, target)                # noqa: F821 (re-seek)
                 yield from bps.sleep(settle)
+                flux = yield from bps.rd(flux_signal)
                 tries += 1
         else:
             yield from bps.null()
@@ -413,13 +433,15 @@ def temperature_axis(heater, setpoints, *, tol=1.0, poll=10.0, timeout=7200.0, s
                      first_soak=None, reverse_alternate=False):
     """A temperature ramp axis using a ``Heater`` (see ``technique_C_temperature``).
 
-    ``heater`` must provide ``set_plan(setpoint)``, ``read_value()``, ``units`` and a
-    recordable ``readback`` Signal (the C-technique ``Heater`` abstraction).  Each point sets
-    the temperature and equilibrates (with timeout) before descending inward.  Temperature is
-    SLOW -> put this axis outermost.
+    ``heater`` must provide ``set_plan(setpoint)`` (a plan), ``units``, and a recordable
+    ``readback`` ophyd Signal (the C-technique ``Heater`` abstraction).  Each point sets the
+    temperature and equilibrates (reading the readback via ``bps.rd`` -- message-based) before
+    descending inward.  Temperature is SLOW -> put this axis outermost.
 
     The heater's read-back Signal is recorded, so the *measured* temperature lands in the
-    stream at each event.
+    stream at each event.  (If your heater's live read-back is only available through a plain
+    method, wrap it with ``smi_plans._devices.linkam_temperature_signal`` so it is a proper
+    ``bps.rd``-able Signal -- see ``docs/DEVICE_DEBT.md``.)
     """
     def _move(setpoint):
         import time
@@ -427,17 +449,15 @@ def temperature_axis(heater, setpoints, *, tol=1.0, poll=10.0, timeout=7200.0, s
         use_soak = (first_soak if (first and first_soak is not None) else soak)
         yield from heater.set_plan(setpoint)
         start = time.time()
-        t = heater.read_value()
-        heater.sync_readback()
+        # read the live temperature via a message (bps.rd) for the convergence test
+        t = yield from bps.rd(heater.readback)
         while abs(t - setpoint) > tol:
             yield from bps.sleep(poll)
-            t = heater.read_value()
-            heater.sync_readback()
+            t = yield from bps.rd(heater.readback)
             if time.time() - start > timeout:
                 break
         if use_soak:
             yield from bps.sleep(use_soak)
-        heater.sync_readback()
 
     # the recordable readback is the heater's own Signal; add it to reads
     return ScanAxis("temperature", setpoints, move=_move,
@@ -455,7 +475,7 @@ def incidence_axis(th_axis, th0, incident_angles, *, settle=0.0, record_name="in
 
     def _move(ai):
         yield from bps.mv(th_axis, th0 + ai)
-        sig.put(ai)
+        # the recorded value (ai) is set by ScanAxis.move_to via bps.mv(record, ai)
         if settle:
             yield from bps.sleep(settle)
 
@@ -516,7 +536,7 @@ def potential_axis(set_potential, potentials, *, equilibration=5.0, readback=Non
 
     def _move(v):
         yield from set_potential(v)
-        sig.put(v)
+        # commanded V (the record) is set by ScanAxis.move_to via bps.mv(record, v)
         if equilibration:
             yield from bps.sleep(equilibration)
 
@@ -528,15 +548,16 @@ def potential_axis(set_potential, potentials, *, equilibration=5.0, readback=Non
 def rh_axis(set_rh, rh_setpoints, *, record_name="rh", live_rh=None):
     """A relative-humidity (SVA) axis.
 
-    ``set_rh(target) -> plan`` ramps the MFCs and equilibrates.  Records the *commanded* RH;
-    pass ``live_rh`` (a Signal you update from ``readHumidity()``) to record the measured RH
-    at each event instead/also.
+    ``set_rh(target) -> plan`` ramps the MFCs and equilibrates.  Records the *commanded* RH
+    (set message-based by the axis).  Pass ``live_rh`` -- a ``bps.rd``-able Signal of the
+    measured humidity (e.g. ``smi_plans._devices.humidity_signal(readHumidity)``) -- to also
+    record the measured RH at each event.
     """
     sig = Signal(name=record_name, value=0.0)                    # noqa: F821
 
     def _move(target):
         yield from set_rh(target)
-        sig.put(target)
+        # commanded RH (the record) is set by ScanAxis.move_to via bps.mv(record, target)
 
     reads = [live_rh] if live_rh is not None else []
     return ScanAxis("rh", rh_setpoints, move=_move, record=sig, reads=reads,
@@ -546,22 +567,21 @@ def rh_axis(set_rh, rh_setpoints, *, record_name="rh", live_rh=None):
 def time_axis(n_frames, *, period=0.0, record_name="frame", elapsed_signal=None):
     """A time-series axis: ``n_frames`` points, ``period`` seconds apart.
 
-    Records the frame index (``{frame}``).  Pass ``elapsed_signal`` (a Signal you update with
-    elapsed seconds) to also record wall-clock elapsed time per event.  The ``period`` sleep is
-    applied as the axis settle.
+    Records the frame index (``{frame}``, set message-based by the axis).  Pass
+    ``elapsed_signal`` (a Signal) to also record wall-clock elapsed seconds per event (set via
+    ``bps.mv``).  The ``period`` sleep is applied as the axis settle.
     """
     sig = Signal(name=record_name, value=0)                      # noqa: F821
     t0 = {}
 
     def _move(i):
-        # Software-only "move": no hardware motion, just stamp the frame index + elapsed time.
-        # (ScanAxis.move_to tolerates a plain function here; the period wait is the axis settle.)
+        # The frame index (record) is set by ScanAxis.move_to via bps.mv(record, i).
+        # We only need to stamp elapsed time -- also message-based (bps.mv).
         import time
         if i == 0:
             t0["t"] = time.monotonic()
-        sig.put(int(i))
         if elapsed_signal is not None:
-            elapsed_signal.put(time.monotonic() - t0.get("t", time.monotonic()))
+            yield from bps.mv(elapsed_signal, time.monotonic() - t0.get("t", time.monotonic()))
 
     reads = [elapsed_signal] if elapsed_signal is not None else []
     return ScanAxis("time", list(range(int(n_frames))), move=_move, record=sig,
@@ -598,11 +618,12 @@ def pause_for_user(prompt="Press <enter> to continue"):
 
 
 def manual_value(prompt, signal, *, cast=float, echo=True):
-    """Plan: prompt the user for a value and ``.put`` it onto a recordable ``signal``.
+    """Plan: prompt the user for a value and set it onto a recordable ``signal`` (via a message).
 
-    The value the user types is captured on ``signal`` (e.g. ``Signal(name="thickness_nm")``)
-    so it is recorded the next time ``signal`` is read -- include ``signal`` in your ``reads``
-    or ``baseline`` so it lands in the data (and is then a ``{thickness_nm}`` filename token).
+    The value the user types is set on ``signal`` (e.g. ``Signal(name="thickness_nm")``) with
+    ``yield from bps.mv(signal, value)`` -- message-based, so it stays a proper plan -- and is
+    recorded the next time ``signal`` is read.  Include ``signal`` in your ``reads`` or
+    ``baseline`` so it lands in the data (and is then a ``{thickness_nm}`` filename token).
 
     Parameters
     ----------
@@ -619,7 +640,7 @@ def manual_value(prompt, signal, *, cast=float, echo=True):
     """
     raw = yield from bps.input_plan("{} = ".format(prompt))
     val = _coerce(raw, cast)
-    signal.put(val)
+    yield from bps.mv(signal, val)            # set via a message (no .put())
     if echo:
         print("recorded {} = {!r}".format(signal.name, val))
     return val
@@ -720,15 +741,18 @@ def manual_axis(name, prompt, values=None, *, signal=None, cast=float,
         yield from bps.input_plan("{} {}  -- ready? <enter>: ".format(prompt, v))
         if signal is not None:
             typed = yield from bps.input_plan("  enter {} = ".format(signal.name))
-            signal.put(_coerce(typed, cast))
-        elif auto is not None:
-            auto.put(_coerce(v, cast) if not isinstance(v, str) else v)
+            yield from bps.mv(signal, _coerce(typed, cast))      # message-based
+        # (when there is no typed signal, the enum value v is recorded on `auto` by
+        #  ScanAxis.move_to via bps.mv(record, v))
         if action_each is not None:
             yield from action_each(v)
 
     if values is not None:
-        ax = ScanAxis(name, values, move=_move_enum, record=rec, speed=speed)
-        return ax
+        # If we capture a TYPED value, set record=None so move_to doesn't overwrite it with v;
+        # _move_enum sets `signal` itself.  Otherwise record the enum value via `auto`.
+        record = None if signal is not None else auto
+        return ScanAxis(name, values, move=_move_enum, record=record,
+                        reads=([signal] if signal is not None else []), speed=speed)
 
     # open-ended: build a generator-of-values lazily is awkward for ScanAxis (which wants a
     # concrete list); instead we return a *plan factory* the recipe runs directly.  To keep a
@@ -769,7 +793,7 @@ def manual_loop(prompt, inner, *, signal=None, cast=float, stop_words=("", "stop
         yield from bps.input_plan("{} (#{}) -- ready? <enter>: ".format(prompt, i))
         if signal is not None:
             typed = yield from bps.input_plan("  enter {} = ".format(signal.name))
-            signal.put(_coerce(typed, cast))
+            yield from bps.mv(signal, _coerce(typed, cast))      # message-based
         yield from inner()
         again = yield from bps.input_plan("Another? <enter>=yes, type 'stop' to finish: ")
         if again.strip().lower() in stop_words and again.strip() != "":

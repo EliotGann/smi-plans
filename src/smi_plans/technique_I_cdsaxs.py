@@ -269,7 +269,7 @@ def cd_gisaxs_rock_run(name, *, ai0, ai, phi_offset=0.0, prs_range=(-5, 5, 2001)
     def _go():
         yield from bps.mv(th_axis, ai0 + ai)                       # set grazing incidence once
         yield from bps.mv(prs, phi_offset)                         # noqa: F821
-        incident_angle.put(float(ai))
+        yield from bps.mv(incident_angle, float(ai))
         yield from _rock_one_run(
             sample_name, dets, start, stop, n, reads=reads, baseline=baseline,
             scan_name="cd_gisaxs_rock", geometry="reflection", md=md, relative=True)

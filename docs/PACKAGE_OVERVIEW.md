@@ -4,9 +4,11 @@ A library for building SMI-SWAXS Bluesky experiments by **composing concerns**, 
 ready-made presets. This is the **target style** for new user scripts and the reference for
 migrating legacy ones.
 
-It is the practical, runnable counterpart to the analysis in `../_analysis/`:
-- `../_analysis/USE_CASE_TAXONOMY.md` — the use-case archetypes seen across the corpus.
-- `../_analysis/BEST_PRACTICES_DRAFT.md` — the 10 tenets these templates implement.
+It is the practical, runnable counterpart to the survey of the legacy corpus (which lives in
+the `SWAXS_user_scripts` repo under `templates/_analysis/`):
+- `USE_CASE_TAXONOMY.md` — the use-case archetypes seen across the corpus.
+- `BEST_PRACTICES_DRAFT.md` — the tenets these templates implement.
+The legacy-pattern → smi-plans mapping is mirrored here in `skills/legacy-swaxs-patterns.md`.
 
 ---
 
@@ -71,28 +73,37 @@ RE(A.nexafs_bar(bar, A.energy_grid(2822), t=1.0, flux_signal=xbpm2.sumX, flux_th
 
 ---
 
-## Why this exists (the 10 tenets, enforced)
+## Why this exists (the tenets, enforced)
 
-Every template — composed or preset — obeys these (see `BEST_PRACTICES_DRAFT.md` for rationale
-+ the legacy anti-patterns each replaces):
+Every template — composed or preset — obeys these (see `BEST_PRACTICES_DRAFT.md` in the
+`SWAXS_user_scripts` survey, and `skills/` here, for rationale + the legacy anti-patterns each
+replaces):
 
 1. **One run per logical sample** (or interleaved runs for slow-axis economy) — never one run
    per data point.
 2. **Context is recorded as devices/Signals** in the primary stream (or baseline if constant)
    — never read with `.get()`/`.position` into a filename. *This includes values the user
-   types* (a manual step puts them on a recorded Signal).
-3. **Filenames are templated from recorded fields** (`{energy_energy}`, `{xbpm2_sumX}`, …)
-   via `fname()` — never hand-formatted strings.
+   types* (a manual step records them on a Signal via a message). The values the user considers
+   important are *also* kept as a structured **`md['user_hints']`** dict (a queryable bundle of
+   hints) — so analysis need not parse the filename. (`acquire(..., user_hints={...})`.)
+3. **Filenames are a convenience derived from recorded fields** (`{energy_energy}`,
+   `{xbpm2_sumX}`, …) via `fname()` — nice-to-have / backward-compatible, never the source of
+   truth, and never hand-formatted from live reads.
 4. **Intent travels in `md={}`** — never `sample_id(...)` / `RE.md` mutation.
-5. **Plans are generators end-to-end** — never `RE()` inside a plan, never `cam.acquire.put`
-   + busy-wait. (User prompts use `bps.input_plan`, which the RunEngine drives.)
-6. **Slow / in-vacuum axes move sparingly** (`waxs.arc`, `prs`, temperature outermost;
+5. **Plans contain ONLY messages — never a direct `.put()` / `.get()` / `.set()`.** Set values
+   with `yield from bps.mv(sig, val)`; read for decisions with `x = yield from bps.rd(sig)`. If
+   hardware has no message path, **fix the ophyd device** (see `docs/DEVICE_DEBT.md` +
+   `smi_plans._devices`) — do not patch around it in the plan. (Guarded by
+   `tests/test_message_purity.py`.)
+6. **Plans are generators end-to-end** — never `RE()` inside a plan, never `cam.acquire.put` +
+   busy-wait. (User prompts use `bps.input_plan`, which the RunEngine drives.)
+7. **Slow / in-vacuum axes move sparingly** (`waxs.arc`, `prs`, temperature outermost;
    interleaved runs when needed). The composition layer's guardrail enforces this culturally.
-7. **Hard-won physics idioms are preserved** (fresh-spot, beam-loss re-seek, ensure-in,
+8. **Hard-won physics idioms are preserved** (fresh-spot, beam-loss re-seek, ensure-in,
    baseline) — via reusable preprocessors + axis hooks, not copy-paste.
-8. **Sample tables live outside plan bodies** — in a `SampleList`.
-9–10. **Shared infrastructure is centralized** in `_compose` / `_core` / `_preprocessors` /
-   `_samples`.
+9. **Sample tables live outside plan bodies** — in a `SampleList`.
+10. **Shared infrastructure is centralized** in `_compose` / `_core` / `_preprocessors` /
+    `_devices` / `_samples`.
 
 ---
 
