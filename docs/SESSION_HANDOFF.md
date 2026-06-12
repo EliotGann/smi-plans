@@ -2,7 +2,51 @@
 
 > **Purpose:** resume this work on another machine. Captures exactly where we are, what's
 > committed (and where), what's verified vs. not, and the next concrete steps.
-> **Last updated:** end of Phase 1 (packaging shell).
+> **Last updated:** Phase 2 in progress — C5 done, three-tier test infra + device factory added.
+
+---
+
+## Latest session (Phase 2 start) — TL;DR
+
+Worked **only** in a local clone at `/nsls2/users/egann/git/smi/profile_collection` (NOT the
+shared `/nsls2/data1/smi/.../profile_collection`), with a hard rule: **no hardware contact**.
+Everything verified offline (`py_compile` + `pixi run -e test test`, CA disabled, fakes only).
+
+New branch **`phase2-device-debt`** (off `phase1-packaging-shell`), **not pushed**:
+```
+c92379e Add three-tier test infrastructure + per-device fake/real factory
+4b9b438 Guard SAXS_Detector init-time position reads (retire xfail)
+e7f14a5 C5: make det_exposure_time a Bluesky plan
+```
+
+1. **C5 done** — `det_exposure_time` is now a Bluesky plan (`yield from bps.mv(...)`); all 11
+   active alignment.py call sites + `startWAXS()` use `yield from`; acceptance test uses
+   `RE(...)`. Deprecated blocking shim `det_exposure_time_sync` kept.
+2. **SAXS_Detector init guard** — `__init__` / `update_beam_center` now guard `None` positions
+   (only affects disconnected/fake; real hardware unchanged). Retires the Phase-1 xfail.
+3. **Three-tier test infra + device factory** (see `profile_collection/docs/TESTING.md`):
+   - `startup/smiclasses/device_factory.py`: `make_device(cls, prefix, name=, force=, seed=)`
+     builds real or **fake (ophyd.sim, non-broadcasting)** per device. Mode priority:
+     `force` > env `SMI_REAL_DEVICES` > env `SMI_FAKE_DEVICES` > in-process overrides >
+     `SMI_DEVICE_MODES_FILE` (CSV `name,mode`) > default `real`. Lets a broken device be pinned
+     to fake in production while the rest stay real; `SMI_FAKE_DEVICES=all` fakes everything.
+   - Tests reorganized into `tests/unit` (pure code), `tests/sim` (fakes + RunEngine plan runs),
+     `tests/hardware` (real PVs, **deselected** unless `pytest --run-hardware`).
+   - `conftest.py` locks down EPICS CA and skips the hardware tier by default.
+   - pixi tasks: `test` (unit+sim), `test-unit`, `test-sim`, `test-hardware`.
+   - **Result:** `pixi run -e test test` → 48 passed, 2 deselected.
+
+**NOT done (needs hardware + Redis — resume next week):**
+- **Wire the live `smibase/*.py` instantiations through `make_device`** so the production
+  per-device fake/real toggle is actually live. Behaviour-preserving (default mode = real), but
+  it edits the boot path and `smibase` still can't be imported off-beamline (`get_ipython()` +
+  Redis at import), so it can't be verified without the live profile.
+- On-beamline smoke test of Phase 1 **and** C5 (real Pilatus exposure via the new plan).
+- Rest of Phase 2: C1/C2 Linkam, C3/C4 humidity, C6 fast shutter, C7 Huber phi.
+
+---
+
+## (Historical) end-of-Phase-1 handoff follows
 
 ---
 
@@ -195,10 +239,10 @@ fixes H4). Not introduced by Phase 1.
 Goal: make the devices message-clean so `smi-plans` can delete its `_devices.py` wrappers. Each
 maps to a `STARTUP_RESTRUCTURE_PLAN.md` / `DEVICE_DEBT.md` item. Suggested order:
 
-1. **C5 — `det_exposure_time` as a PLAN.** Currently `smibase/pilatus.py:22` is a blocking
-   `.set()/.put()` function called synchronously in ~13 alignment plans. Make a generator
-   (`yield from bps.mv(pil2M.cam.acquire_time, …)`), wire the amptek `mca.preset_real_time`,
-   update the call sites, keep a deprecated shim. (Tenets 5/6.)
+1. **C5 — `det_exposure_time` as a PLAN.** ✅ **DONE** (commit `e7f14a5` on
+   `phase2-device-debt`). Generator using `yield from bps.mv(...)`; amptek `mca.preset_real_time`
+   wired (guarded on `amptek_det`); 11 alignment call sites + `startWAXS()` updated; deprecated
+   `det_exposure_time_sync` shim kept.
 2. **C1+C2 — Linkam Heater.** Expose `LThermal.temperature_current` (already exists,
    `smiclasses/linkam.py:53`) as the recordable readback; add units + a `done`/at-setpoint;
    delete the `.put()/.get()` methods (`temperature()`, `setTemperature`, `on/off`).
