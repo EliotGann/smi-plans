@@ -2,7 +2,114 @@
 
 > **Purpose:** resume this work on another machine. Captures exactly where we are, what's
 > committed (and where), what's verified vs. not, and the next concrete steps.
-> **Last updated:** Phase 2 in progress — C5 done, three-tier test infra + device factory added.
+> **Last updated:** Phase 3 device-cleanliness COMPLETE (H1–H6, M2/M3/M4/M6), hardware-confirmed.
+> Next: Phase 3 Redis-config workstream **or** Phase 4 (QS factory). Phase 4 rundown at bottom.
+
+---
+
+## Latest session (Phase 3 — device cleanliness) — TL;DR
+
+Branch **`phase3-device-cleanliness`** (off `phase2-device-debt`), **not pushed**. Remote is
+`github.com/NSLS2/smi-profile-collection`. **All changes hardware-confirmed working by staff**
+(BDM moves, attenuators, prompt, valves/shutters). Safe suite: **71 passed, 4 skipped,
+15 deselected** (`pixi run -e test test`).
+
+Phase-3 commits (newest first):
+```
+1025eb5 M3/M4: unify on one TwoButtonShutter with explicit per-valve polarity; GV7 aliased
+e8ac113 H4: make BDM stage a positioner with real move-completion (readback-based)
+363c064 M2: remove orphan dcm_theta (duplicate object on motor m65)
+1a252ee M6: fix LakeShore D-gain PV + make output1..4 proper Components
+a0257a8 test: prove the old multi-foil idiom is already settled/safe via per-foil set()
+3b76cdc Workflow: richer IPython prompt + BEAM_DOWN suspender bypass
+f9fb1cd Attenuator: settle_time 0.6->2 (hardware-tuned) + watchdog margin guard
+32b0568 Fix attenuator bounce-back: settle-debounce + aggregate Attenuators device
+66713c9 H3: rewrite Attenuator.set() as a non-blocking, retrying, safe-failing set
+d21b69a docs: document the integration (fake-IOC) test tier in TESTING.md
+377261b Add fake-IOC integration test tier (caproto) for energy move choreography
+56e4409 H1/H2: non-blocking feedback + IVU-brake handling; fix small_move restore
+5150741 H5/H6: deprecate sample_id and get_scan_md/get_more_md (keep working)
+ef31a53 H5: alignment scans use run-scoped sample_name (drop RE.md mutation)
+```
+
+### What landed (by audit ID)
+
+- **H1/H2 (`56e4409`)** — `Energy.set()` no longer blocks on DCM feedback toggling; the IVU brake
+  is handled via `put(1, wait=True)` on the calling thread (the ophyd set-thread lacks a CA
+  context, so `.set().wait()` there was wrong); fixed `small_move` restore. Two energy move paths
+  preserved: `energy.move(E)`/`bps.mv` (blocking, console) vs `move_energy(E)` (message plan).
+- **H3 + bounce-back (`66713c9`, `32b0568`, `f9fb1cd`, `a0257a8`)** — `Attenuator.set()` rewritten
+  non-blocking, retrying, **safe-failing** (raises if a foil never confirms — a safe halt beats a
+  wrong/unsafe foil position). Root-caused a hardware **bounce-back**: a foil reads its target
+  momentarily then falls back, and the old `set` latched that transient as success. Fix:
+  **settle-debounce** (`settle_time`, hardware-tuned to **2 s**) — the read-back must STAY at target
+  for `settle_time` before success; plus a **watchdog-margin guard** so `timeout` can't be set
+  `<= settle_time` (which would spuriously fail every move). Added an aggregate **`Attenuators`**
+  device + `make_attenuator_bank` (`attenuators1`/`attenuators2`, foils `f1..f12`) for all-or-
+  nothing combined moves. **Key result:** the OLD idiom `RE(bps.mv(att1_6, 0, att1_8, 0, att1_9, 0))`
+  already routes through the settled/safe per-foil `set()` and leaves unmentioned foils alone —
+  nothing to change for users (pinned by tests).
+- **H4 (`e8ac113`)** — **BDM stage** `x`/`y`/`th` were bare `EpicsSignal`s (completed on CA put-ack,
+  not on settle). Now `SmarActAxis(PVPositionerIsClose)`: a move completes when the **readback** is
+  within `atol=0.01` of the setpoint. The SmarAct's own done flags are **unreliable on this
+  hardware** (verified live: `RD_MOVING` stuck `1`, `RD_INRANGE` stuck `0`), so a done-flag
+  positioner would hang — `POSITION` is the only trustworthy signal. Flags exposed as `kind="config"`
+  diagnostics. Interface preserved (`bps.mv`, `rel_scan`); the 3 alignment sites that read via the
+  old scalar `.get()` now use `.position`. **Hardware-confirmed.**
+- **H5/H6 (`ef31a53`, `5150741`)** — alignment scans use a **run-scoped `sample_name`** decorator
+  (`sample_name_decorator` in `smiclasses/_plan_helpers.py`) instead of mutating `RE.md`; 11 plans
+  decorated. `sample_id`/`get_scan_md`/`get_more_md` are **deprecated-but-kept** (warn + doc) for
+  unmigrated user scripts — never deleted.
+- **M2 (`363c064`)** — removed the orphan `dcm_theta` (a 3rd ophyd object on motor m65, zero live
+  consumers). GV7 dedup folded into M3/M4 (below). **Deliberately NOT touched:** `dcm_config`
+  (DCMInternals) also duplicates m65/m66/m67 but is on baseline — per staff, leaving it (still
+  measured) is fine; consolidation would only be cosmetic.
+- **M3/M4 (`1025eb5`)** — unified on **one** `TwoButtonShutter` (the maintained `nslsii.devices`
+  one) — retired the local divergent/buggier copy. Added a thin SMI subclass exposing **explicit
+  per-valve polarity** (`cmd_actuate_val`, default `1`): per staff, a valve's actuation value can be
+  `1` OR `0` (open/close always opposite) and the status read-back's open/closed meaning varies per
+  valve but is consistent within it. **Default behavior unchanged**; no valve changes until given an
+  explicit polarity. `GV7` de-duplicated → now `GV7 = chamber_pressure.waxs_saxs_valve` (defined
+  once, aliased; still in baseline via `chamber`). **Hardware-confirmed.**
+- **M6 (`1a252ee`)** — LakeShore `output_lakeshore.D` pointed at `Gain:I-SP` (a 2022 copy-paste;
+  duplicated I) → now `Gain:D-SP`. `output1..4` were eager plain instances with absolute prefixes
+  (invisible to ophyd, not faked under sim) → now proper `Cpt`s with relative suffixes (same PVs).
+  **Hardware-facing** (D now connects a previously-unconnected PV) but nothing reads/writes
+  `outputN.D`, so safe.
+- **Workflow (`3b76cdc`)** — richer IPython prompt (colored `SMI` tag, `pass-` stripped from
+  data_session, project_name colored, date/time). **`BEAM_DOWN`** env var (or `SMI_BEAM_DOWN`):
+  suspenders are BUILT but NOT installed (prints a banner), so you can restart Bluesky beam-down
+  without `turn_off_suspenders()` each time; `turn_on_suspenders()` re-enables (now also installs
+  `susp_phi_motor`). pixi task `start-beamdown` = `start` with `BEAM_DOWN=1`.
+- **Test infra (`377261b`, `d21b69a`)** — fake-IOC **integration tier** (caproto) for the energy
+  move choreography: `tests/iocs/sim_energy_ioc.py`, `tests/integration/test_energy_iocs.py`,
+  `pixi run -e test test-iocs` (`--run-iocs`). Documented in `docs/TESTING.md`.
+
+### Phase-3 device debt: DONE
+H1–H6 and M2/M3/M4/M6 are complete. **`L`-items / Phase-0 leftovers status:** LakeShore D-PV now
+fixed (M6). WAXS `_SAXS.tif` template and the detector SSH-password-to-secret are **still open**.
+
+### NOT done (Phase 3 remainder + later)
+- **Phase 3 Redis-config workstream (§8 of the plan)** — migrate hardcoded calibration into
+  Redis-seeded `kind="config"` Signals: energy IVU-gap offset arrays (`smiclasses/energy.py`),
+  bimorph voltage tables (`smiclasses/bimorph.py`), `-80` offset. Stand up `config/redis_keys.py`
+  registry + `load_config`/`persist_config` helpers (Pilatus already shows the pattern). Retire
+  `smi_config.csv`/`intepolation_db_sdd2.txt`. **Not started.**
+- **Phase 4** — the `make_devices(context)` factory (QS gate). See the rundown at the bottom of
+  this file. **Not started.**
+- Branches still **not pushed**; no PRs opened.
+- Blocked: caproto bare-pvproperty PVs won't connect via ophyd `wait_for_connection` (pyepics
+  connects fine) — attenuator integration uses `make_fake_device` sim tests instead.
+
+### Known harmless test noise
+In non-quiet pytest runs a `ChannelAccessException: Unexpected channel ID` may print at
+interpreter **teardown** (a leaked CA channel GC'd at session end) — it appears AFTER all asserts
+pass and does NOT affect exit code (suite still exits 0). Tests that only need a PV string read
+`Cpt.suffix`/`.pvname` without `.get()` to avoid creating live channels.
+
+---
+
+## (Historical) Phase 2 start follows
 
 ---
 
@@ -272,21 +379,74 @@ hardware-semantics decisions before changing them.
    0.816887 / slope 0.028813 / T-corr) is the intended source.
 3. **`pil2M_pos` vs `pil2m_pos`** casing (plans use uppercase; profile defines lowercase).
 4. **`pil300KW` / `rayonix`** — decommissioned or to be restored? (commented out)
-5. **`Insert/Retract` enum** semantics differ for valves vs foils — confirm before unifying.
+5. ~~**`Insert/Retract` enum** semantics differ for valves vs foils~~ — **ANSWERED (Phase 3):** no
+   single convention; a valve's actuation value is `1` or `0` (open/close always opposite) and the
+   status read-back's open/closed meaning varies per valve but is consistent within it. Handled by
+   per-valve `cmd_actuate_val` on the unified `TwoButtonShutter` (default `1` = unchanged). Each
+   valve's true polarity still to be confirmed against CSS before overriding.
 6. **Package name/home** (`smi_beamline`?) and whether it lives in the profile repo or a new repo.
 7. **Q-QS:** want the "QS-minimal shortcut" as an earlier milestone, or QS strictly after the
    Phase-4 factory?
 8. **Q-Redis:** want a periodic "dump Redis config → git/JSON" snapshot for provenance, or is the
    live Redis dict the sole source of truth?
-9. **Phase 0 leftovers:** OK to fix LakeShore `D` PV, WAXS `_SAXS.tif` template, and move the
-   detector SSH password to a secret?
+9. ~~**Phase 0 leftovers:** LakeShore `D` PV~~ — **DONE (M6).** Still open: WAXS `_SAXS.tif`
+   template, and moving the detector SSH password to a secret.
 
 ---
 
 ## Quick orientation for the next session
 
-1. `cd /nsls2/data1/smi/shared/config/bluesky/profile_collection && git checkout phase1-packaging-shell`
+1. `cd /nsls2/data1/smi/shared/config/bluesky/profile_collection && git checkout phase3-device-cleanliness`
 2. Read `smi-plans/docs/STARTUP_AUDIT.md` (§8 debt register) + `STARTUP_RESTRUCTURE_PLAN.md`
-   (Phase 2, §7 QS, §8 Redis).
-3. `pixi run -e test test` to confirm the harness is green.
-4. Pick up at Phase 2, item C5 (det_exposure_time as a plan) unless priorities changed.
+   (§7 QS, §8 Redis, Phase 4).
+3. `pixi run -e test test` to confirm the harness is green (expect **71 passed, 4 skipped,
+   15 deselected**).
+4. Phase-3 device debt is **done + hardware-confirmed**. Pick up at either the **Phase-3
+   Redis-config** workstream (§8) or **Phase 4** (the factory — rundown below).
+
+---
+
+## Phase 4 rundown — the `make_devices(context)` factory (the QS gate)
+
+**Goal:** remove the last import-time globals so the package imports **headless** (no live
+IPython/EPICS), which is exactly what `bluesky_queueserver`'s pure-Python worker needs.
+
+**The governing problem (audit §1, plan §7.1):** ~23 `get_ipython().user_ns[...]` grabs
+(`RE`/`sd`/`bec`/`db`) scattered across `smibase/*.py`, plus import-time `RE`/`sd` mutation,
+import-time secret/Tiled/Redis reads, `ip.prompts = ProposalIDPrompt(ip)`, an import-time Duo
+push, and `RE.install_suspender(...)`. In the QS worker `get_ipython()` returns **`None`**, so the
+profile crashes on the **first line of `base.py`** (`nslsii.configure_base(get_ipython().user_ns,
+...)`). Modules therefore only import inside a live, configured IPython session.
+
+**The fix (plan §3 "Key design moves", §4 Phase 4):**
+1. **`make_devices(context)`** — a factory that *receives* `{RE, sd, db, bec, md, ...}` (built by a
+   thin bootstrap) and returns the namespace of live device objects, wiring baselines and Tiled
+   subscriptions **explicitly**. Replaces the `user_ns` grabs and import-time mutations. Device
+   classes never call `get_ipython()`.
+2. **Thin `startup/` bootstrap (~30 lines)** — the ONLY IPython-aware code: build the context,
+   call `make_devices`, push results to `user_ns`, install suspenders, subscribe Tiled. Guard the
+   IPython-only bits (`ip.prompts`, magics, Duo, `configure_olog`) with `is_ipython_mode()` /
+   `is_re_worker_active()` so the worker skips them.
+3. **Verify:** profile loads via BOTH `pixi run terminal.start` AND `pixi run qs.qs-backend`, and
+   off-beamline `import smi_beamline` succeeds with no live IPython/EPICS.
+
+**Why it's well-positioned now:** the `_context.py` seam (Phase 1) already broke the
+`smibase`↔`smiclasses` import cycle and proved dependency-injection for `RE.md`/`mdsave`/energy;
+the `device_factory.make_device(...)` (Phase 2) already builds real-or-fake per device. Phase 4
+generalizes that seam to the WHOLE namespace and moves the bootstrap side-effects out of import.
+
+**Risk:** Medium — it rewrites the boot path. Mitigation (plan §5): keep the current `startup.py`
+working until the factory is proven in parallel; do a hardware smoke-test (count each detector, one
+alignment, one energy move, one temperature setpoint, shutter open/close) before switching.
+
+**Note — QS needs 4 more non-cleanup artifacts (plan §7.3), separate from the factory:**
+`existing_plans_and_devices.yaml`, `user_group_permissions.yaml` (must include a `root` group),
+plan-signature validation (the profile's own plans — `alignment`/beam-mode/exposure — are the risk;
+`smi-plans` is already signature-clean), and deployment infra (a Redis for the queue store +
+systemd/ansible). And the **Redis-config workstream (§8)** is a soft prerequisite for a *good* QS
+experience (Redis is process-shared, so the worker and terminal agree on calibration).
+
+**Optional "QS-minimal shortcut" (plan §7.4, Open Question Q-QS):** make `base.py` worker-aware
+WITHOUT the full factory (guard IPython-only code, pass the real namespace, neutralize the sd-grabs
+via a shared baseline helper). Yields a working QS backend sooner, but touches `base.py`/bootstrap
+twice. Decide via Q-QS.
