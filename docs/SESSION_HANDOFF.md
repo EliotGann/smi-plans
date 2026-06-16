@@ -2,9 +2,116 @@
 
 > **Purpose:** resume this work on another machine. Captures exactly where we are, what's
 > committed (and where), what's verified vs. not, and the next concrete steps.
-> **Last updated:** Phase 3 COMPLETE — device-cleanliness (H1–H6, M2/M3/M4/M6) **and** the
-> Redis-config workstream (config helpers, energy/bimorph/Pilatus migrations, bimorph save/load),
-> all hardware-confirmed. **Next: Phase 4 (QS factory)** — rundown + readiness at bottom.
+> **Last updated:** Phase 4 (factory + package) Steps 1–4b DONE & hardware-confirmed: device
+> classes moved to `src/smi_beamline/`, `make_devices(context)` factory with a timed loader is the
+> LIVE boot path, all import-time `get_ipython()` grabs gone except the 5 in `base.py`. **Next:
+> make `base.py` worker-aware so QS boots headless (the real Q-QS step) + the 4 QS artifacts.**
+
+---
+
+## Latest session (Phase 4 — factory + package) — TL;DR
+
+Own branch **`phase4-factory-package`** (off the completed `phase3-device-cleanliness`, which is
+**untouched** — instant rollback). **Not pushed.** **Hardware-confirmed by staff** (profile loads
+via the factory with the timed display; scan + baseline OK; suspenders install; bec accessible).
+Safe suite: **95 passed, 4 skipped, 15 deselected**.
+
+Phase-4 commits (newest first):
+```
+bafea58 Step 4b: repoint imports to smi_beamline.devices; remove the smiclasses shim
+0358f6a       drop redundant per-file "Loading X" prints (factory's timed line replaces them)
+8012e75 Step 3:  switch the live boot path to the factory (timed loader goes live)
+8bd6418 Step 2c: add make_devices(context) factory with Option-C timed loader
+0fb785a Step 2b: convert RE/bec/db grabs to seam injection (grabs now only in base.py)
+39c21f7 Step 2a: inject sd/bec/db into the seam; baseline_register replaces 16 sd-grabs
+31616d5 Step 1:  move device classes to src/smi_beamline/devices (with smiclasses shim)
+```
+
+### Decisions taken (locked)
+- **Package lives IN this repo** at `src/smi_beamline/` (not a separate repo). `startup/startup.py`
+  stays the entry point that IPython/QS exec; it puts `src/` on `sys.path`.
+- **One file per current module** (`devices/pilatus.py`, `devices/energy.py`, …) — no
+  `detectors.py`/`motion.py` merges (kept the diff small + git history 1:1 via `git mv`).
+- **Factory style = "orchestrate imports (timed)"**: `make_devices` imports the device modules in
+  order, times each, reports ok/fail; modules still build at import (grabs gone), the factory
+  owns/sequences/times it. Per-module `make_X()` conversion can happen later without changing the API.
+- **Loader display = Option C** (per-module ok/fail + timing + a ✓/✗ summary).
+
+### New layout
+```
+src/smi_beamline/
+  __init__.py
+  devices/            # the 24 former smiclasses modules (CLASSES only, import-clean)
+    __init__.py
+    _context.py       # the dependency seam (now also carries sd/bec/db + baseline_register)
+    _config.py, pilatus.py, energy.py, bimorph.py, manipulators.py, ...
+  instances.py        # make_devices(context): the FACTORY + Option-C timed loader
+startup/
+  smibase/            # the instance/logic modules (build instances at import; plans; mode logic)
+  startup.py          # bootstrap: src on path -> import base/base_dev -> make_devices() -> globals()
+```
+
+### What landed, step by step
+- **Step 1 (`31616d5`)** — `git mv` the 24 `smiclasses` modules to `src/smi_beamline/devices/`
+  (history preserved); pilatus's 3 absolute `smiclasses.` imports → relative. A temporary
+  `startup/smiclasses/` shim re-exported the new location so nothing else changed. `startup.py`
+  puts `src/` on `sys.path`; `pyproject.toml` became a src-layout `smi-beamline` package.
+- **Step 2a (`39c21f7`)** — extended the `_context` seam with `sd`/`bec`/`db` injection +
+  `get_sd/get_bec/get_db` + **`baseline_register(*devices)`** (no-op when unconfigured). `base.py`
+  injects them. **16 `sd = get_ipython().user_ns['sd']; sd.baseline.extend(...)` sites → 
+  `_context.baseline_register(...)`.** Also fixed the long-standing intermittent test flake
+  (`test_two_button_shutter_unified_and_polarity` raced the nslsii retry timer; now polls).
+- **Step 2b (`0fb785a`)** — added `get_re()`; converted the remaining `RE`/`bec`/`db` grabs in
+  `base_dev`/`config`/`suspenders`/`alignment`/`utils` to the seam; dropped a dead `get_ipython`
+  import in `beam`. **Result: the only import-time `get_ipython().user_ns` grabs left are the 5 in
+  `base.py`** (configure_base, RE, bec, sd, configure_olog). (`utils.hardware_check()` has one grab
+  inside the function body — runs only when called, doesn't block headless import.)
+- **Step 2c (`8bd6418`)** — `smi_beamline/instances.py` with **`make_devices(context)`**: imports
+  the device modules in dependency order, times each, prints the Option-C report, collects every
+  public name into one namespace dict; continue-on-error by default (`halt_on_error=True` to stop).
+  `DEVICE_MODULES` = the historical `startup.py` order MINUS `base`/`base_dev` (the bootstrap).
+- **Step 3 (`8012e75`)** — **switched the live boot path**: `startup.py` now runs the bootstrap
+  (`from smibase.base/base_dev import *`, which create RE/sd/bec/db + wire the seam), then calls
+  `make_devices(ctx)` and `globals().update(...)` to merge the built instances/plans into the user
+  namespace. Verified the factory+bootstrap cover EXACTLY the same 27 modules as before.
+- **`0358f6a`** — removed the now-redundant `print(f"Loading {__file__}")` from the 24 device
+  modules (the factory's timed line replaces them); kept them in `base.py`/`base_dev.py` (pre-factory
+  bootstrap feedback during the slow Tiled/Duo/Redis phase).
+- **Step 4a/4b (`bafea58`)** — verified **all 24 device modules import fully headless** (no
+  IPython/session — the factory payoff). Then repointed every `from smiclasses.X import Y` in
+  smibase/startup/tests to `smi_beamline.devices`, renamed `test_smiclasses_import.py` →
+  `test_devices_import.py`, and **deleted the shim** (`import smiclasses` now ModuleNotFoundError).
+
+### What is verified
+- **Hardware:** the live profile loads via the factory with the timed display; a count scan runs;
+  the baseline populates and records; suspenders install; `bec`/`db` resolve. (A full alignment run
+  was deferred by staff but uses the same confirmed `bec`.)
+- **Offline:** safe suite 95 passed; every `smi_beamline.devices` module imports with
+  `get_ipython() is None`; the seam degrades gracefully headless.
+
+### NOT done — the remaining QS work (next session)
+- **`base.py` is still IPython-coupled** (5 grabs: `configure_base(get_ipython().user_ns, ...)`,
+  `RE`/`bec`/`sd` from user_ns, `configure_olog`; plus the prompt, Duo push, Tiled/Redis at import).
+  For a **headless QS boot**, `base.py` must become worker-aware: pass the real namespace / guard
+  the IPython-only bits with `is_re_worker_active()` / `is_ipython_mode()`, and move the
+  prompt/Duo/suspender-install side effects behind those guards. This is the genuine **Q-QS** step.
+- **`utils.hardware_check()`** has one in-function `get_ipython().user_ns` (terminal diagnostic) —
+  guard it for the worker.
+- **The 4 QS-specific artifacts (plan §7.3)**: `existing_plans_and_devices.yaml`,
+  `user_group_permissions.yaml` (needs a `root` group), plan-signature validation of the profile's
+  own plans, and deployment infra (Redis for the queue + systemd/ansible).
+- **Optional tidy-ups (deferred, low value):** per-module `make_X(context)` builders; the
+  `config/pvs.py` PV-string extraction; the `detectors.py`/`motion.py` file merges; `pip install -e`
+  the package into the pixi env (currently `src/` is added to `sys.path` instead).
+
+### Rollback
+Phase 4 is entirely on `phase4-factory-package`. To abandon it: `git checkout
+phase3-device-cleanliness`. To revert only the boot switch but keep the move: restore the flat
+`from smibase.X import *` list in `startup.py`.
+
+---
+
+## (Historical) Phase 3 follows
 
 ---
 
@@ -472,16 +579,18 @@ hardware-semantics decisions before changing them.
 
 ## Quick orientation for the next session
 
-1. `cd /nsls2/data1/smi/shared/config/bluesky/profile_collection && git checkout phase3-device-cleanliness`
-2. Read `smi-plans/docs/STARTUP_AUDIT.md` (§1, §8 debt register) + `STARTUP_RESTRUCTURE_PLAN.md`
-   (§4 Phase 4, §7 QS).
-3. `pixi run -e test test` to confirm the harness is green (expect **85 passed, 4 skipped,
-   15 deselected**). Note: an intermittent (~1-in-8) timing flake exists in the safe suite (a
-   short-window timer test); a rerun is green. The `ChannelAccessException` at interpreter
-   teardown in non-quiet runs is harmless GC noise (exit code still 0).
-4. **Phase 3 is fully done + hardware-confirmed (device-cleanliness AND Redis-config).** Start
-   **Phase 4 — the `make_devices(context)` factory** (rundown + readiness below). First decide the
-   two open questions (Q-QS clean-vs-shortcut, Q-package new-package-vs-decouple-in-place).
+1. `cd /nsls2/data1/smi/shared/config/bluesky/profile_collection && git checkout phase4-factory-package`
+   (Phase 4 lives here; `phase3-device-cleanliness` is the untouched rollback point.)
+2. Read `smi-plans/docs/STARTUP_AUDIT.md` (§1, §8) + `STARTUP_RESTRUCTURE_PLAN.md` (§7 QS, §7.3
+   artifacts). The Phase-4 TL;DR at the top of THIS file is the live state.
+3. `pixi run -e test test` to confirm green (expect **95 passed, 4 skipped, 15 deselected**). The
+   old ~1-in-8 timer flake is fixed; the teardown `ChannelAccessException` is harmless GC noise
+   (exit 0).
+4. **Phases 0–3 done; Phase 4 Steps 1–4b done & hardware-confirmed (factory is the live boot path).**
+   Next is the **QS-headless work**: make `base.py` worker-aware (the 5 grabs + prompt/Duo/Tiled
+   behind `is_re_worker_active()` guards), guard `utils.hardware_check()`, then the 4 QS artifacts
+   (§7.3). This is the **Q-QS** decision point — full clean bootstrap vs. minimal worker-guards.
+   Test the worker path with `pixi run qs.qs-backend`.
 
 ---
 
