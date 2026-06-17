@@ -222,6 +222,93 @@ session)". This catches the classes of bugs the manual validation caught during 
 > The sim harness already converges the Linkam equilibration loop and keeps the WAXS arc up so
 > SAXS stays in the det list — see `SimBeamline`. Reuse it; do not reinvent fake devices.
 
+## Sample bookmarks (the persistent sample/holder system)
+
+This is **separate from the ExperimentSpec** above. The spec is *what to do* (transient, per
+experiment); a **sample bookmark** is *a physical thing on a holder* (persistent, shared across
+sessions). The bookmark system has its own full design in **`docs/SAMPLE_SYSTEM_PLAN.md`** — read
+that first. This section is only the **GUI's contract** with it.
+
+> Build bookmarks against the design in `SAMPLE_SYSTEM_PLAN.md`. Do **not** model them on how
+> sample/position state is handled in the existing test GUIs / prototype servers — those predate
+> this system and use ad-hoc per-app state. The canonical store is the one below.
+
+### The one rule: the GUI talks to the store over its OWN Redis connection, not the RunEngine
+
+Sample bookmarks live in **Redis db=2** (the **shared-state bus**), accessed through the
+pure-python **`SampleStore`** facade (`smi_plans._store.SampleStore`). The GUI **connects directly
+to Redis** — `store = SampleStore.from_redis()` — and does **not import the profile/`smi_beamline`,
+not `_context`, not EPICS, not the RunEngine**. It needs only `redis` + `redis_json_dict` and the
+package's pure-python `_samples`/`_store` in its own env, and to run where the db=2 host + secret
+(`/etc/bluesky/redis.secret`) are reachable (the beamline workstation — see `SAMPLE_SYSTEM_PLAN.md`
+§1b for the boundary). It performs **no motion** and makes **no RE/EPICS calls**.
+
+```
+   ┌────────┐  SampleStore.from_redis()      ┌──────────────────────┐   SampleStore(_context...)  ┌──────────────────┐
+   │  GUI   │ ──own Redis conn──►            │   Redis db=2         │            ◄──seam reuse──── │ beamline plans   │
+   │ (no    │ ◄────────────────►             │  'swaxssamples'      │            ◄──────────────►  │ load_sample(...) │
+   │ profile│  put_/get_/list_               │  samples / holders / │   reads active ptr          │ + history callback│
+   │ import)│  set_active_sample (intent)──► │  magazine / active   │ ◄───────────────────────────┤ writes ScanRecord │
+   └────────┘                                │  + scan history      │                             └──────────────────┘
+                                             └──────────────────────┘
+            two independent processes, two independent Redis connections, ONE shared db=2 store
+```
+
+### What the GUI reads (render bookmarks)
+
+From `store` (all pure data; see the dataclasses in `SAMPLE_SYSTEM_PLAN.md` §2):
+
+- `list_holders()` / `list_samples(holder_id=...)` → draw the magazine and each bar's samples.
+- per `Sample`: `name`, `slot`, `nominal`/`refined` `Position` (show "aligned ✓" when `refined`
+  is set), `last_alignment(...)` (code/status/when), `n_scans()`, and `history[-1].energy_eV` /
+  `.when` for an at-a-glance "last measured" badge.
+- `get_active_sample()` → highlight what is currently **loaded**.
+- `magazine()` → which holder is `at_measurement` (only one, by design D3), which are racked.
+
+### What the GUI writes (edit bookmarks)
+
+- **New / edited samples:** a sample table (name + holder + slot + nominal coords + free md) →
+  `put_sample(...)` / bulk `import_samples(samples, holder)`. Identity is the stable `Sample.id`
+  (D10) — **renaming in the GUI never breaks history links**, because history joins on id, not
+  name. Unknown columns the user adds fold into `md` (same rule as `from_csv`).
+- **Holder membership / slot labels:** `put_holder(...)`.
+- **CSV import/export:** wire the GUI's import button to `import_samples` (the `samples.csv`
+  schema in §6) and the export button to `export_tables()` → write `samples_out.csv` +
+  `scans_out.csv` (the two joinable sheets — the user's enriched spreadsheet).
+
+### How the GUI triggers a load (intent in the shared store, motion in the beamline process)
+
+The GUI and the beamline are **separate processes sharing db=2**, so "load sample X" is the GUI
+**writing intent** that the beamline process acts on — the GUI never moves anything itself:
+
+- **The hand-off:** the GUI calls `store.set_active_sample(id)` (a write to the shared db=2). The
+  beamline session/worker — which *does* have the RunEngine + devices — runs `load_sample(...)`
+  (transfer the holder, go to position, confirm the active pointer; §4). Because both see the same
+  Redis, the beamline can pick up "the GUI requested sample X" and the GUI can see "the beamline
+  loaded it" — live.
+- **Triggering the plan today (no qserver):** the beamline operator runs
+  `RE(load_sample(store.get_sample("<id>"), store=store))` in the session (where `store` there is
+  the in-profile `SampleStore(_context.get_sample_store())`). The GUI can surface that one-liner
+  to copy, or just set the active pointer and let the operator load it.
+- **Later (qserver):** "load sample X" enqueues a `load_sample` plan item to the worker; the active
+  pointer in db=2 is the shared hand-off. Additive — no GUI rework, same store.
+
+### How the on-axis viewer uses bookmarks (dose map)
+
+The on-axis / SWAXS viewer can overlay the **irradiated-region map** by reading each sample's
+`history[].spots` (`SpotSummary`, §7) — the visited spots/bbox in the **sample frame** — so the
+user sees which parts of the sample have already seen beam before choosing a fresh spot. It reads
+this from its own `store` connection (compact, fast); the full per-run data is recoverable from
+Tiled via each `ScanRecord.run_uid` if needed. The viewer **reads**; it does not write bookmarks.
+
+### Connecting / offline
+
+- **Live (the real case):** `store = SampleStore.from_redis()` — a direct db=2 connection, no
+  profile import. Requires `redis` + `redis_json_dict` in the GUI's env and reachability of the
+  db=2 host + secret (`SAMPLE_SYSTEM_PLAN.md` §1b).
+- **Offline / tests only:** `SampleStore({})` (in-memory) or a JSON-file backend — for developing
+  the GUI with **no Redis**. This is a dev convenience, **not** a way to see live samples.
+
 ## Future: queueserver (design for it now, don't build it)
 
 qserver is NOT in use at SMI today. Keep the door open by obeying these constraints:
@@ -261,8 +348,13 @@ Organize the UI by the five concerns:
    `reads` set (sensible default `[energy, waxs, xbpm2, xbpm3]`).
 3. **Apparatus / geometry:** alignment routine + angle; attenuators-in selection; heater
    (none/Linkam/Lakeshore); (later) RH, echem, beamstop. These compose into `setup()`.
-4. **Samples:** a table (name + piezo/hexa coords + per-sample incident angles + free md) backed
-   by `SampleList`; import from CSV; single-sample vs bar; opt-in arc-economy (`multi_sample_run`).
+4. **Samples / bookmarks:** a table (name + holder + slot + piezo/stage coords + per-sample
+   incident angles + free md) backed by the **persistent `SampleStore`** (Redis db=2), not just an
+   in-memory `SampleList`. Import/export CSV (the two-sheet schema); single-sample vs bar; opt-in
+   arc-economy (`multi_sample_run`); show aligned/last-measured state; "load sample" sets the
+   active pointer (intent). See the **Sample bookmarks** section above and
+   `docs/SAMPLE_SYSTEM_PLAN.md`. (An ExperimentSpec's transient `samples` block may also be
+   populated *from* a bookmark selection.)
 5. **Scan axes:** an ordered, reorderable list; "add axis" of each type (energy / temperature /
    incidence / motor / spatial / potential / rh / time / **manual**); per-axis params; a live
    **ordering guardrail** indicator (slow axes should be higher). Show the resulting nesting and
@@ -298,7 +390,10 @@ Cross-cutting:
 ## Rules / constraints
 
 - **No backend calls now.** The GUI's only outputs are: script text, a saved spec file, and a
-  dry-run report computed locally with simulated devices. No `RE`, no EPICS, no network.
+  dry-run report computed locally with simulated devices. No `RE`, no EPICS. (The **one** allowed
+  network/persistence is the **`SampleStore`** for sample bookmarks — a **direct Redis db=2
+  connection** via `SampleStore.from_redis()`, or an offline dict/JSON backend; it is still *not*
+  RE/EPICS and *not* a profile import — just the shared sample-state bus.)
 - **Generated scripts must obey the tenets** (one run/sample; recorded context; `{token}`
   filenames; `md={}`; generators; slow axes outermost) — because they are built from
   `smi_plans._compose`, this is automatic; do not generate raw `bp.count`/`sample_id` code.
@@ -309,6 +404,9 @@ Cross-cutting:
 
 ## Pointers
 
+- **Sample bookmarks / persistent sample system:** `docs/SAMPLE_SYSTEM_PLAN.md` (the data model,
+  Redis db=2 `SampleStore`, load/history lifecycle, CSV round-trip, GUI contract) — read this
+  before building the Samples/bookmarks panel.
 - Composition API + axes: `docs/PACKAGE_OVERVIEW.md`, `skills/composing-smi-experiments.md`,
   `src/smi_plans/_compose.py`.
 - The seed of the GUI bridge: `src/smi_plans/recipes_combined.py::build_axes_from_spec` (axis

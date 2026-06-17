@@ -65,6 +65,41 @@ bridge, not the destination.
   `cam.acquire.put(1)` + busy-wait. `cam.num_images` is a normal settable ophyd signal. No fix
   needed.
 
+### 5. (Resolved) `prs` rotation stage removed → repointed to Huber `stage.phi`
+- **Status: FIXED (package-side).** The standalone `prs` (Precision Rotation Stage) was removed on
+  the live profile and replaced by the Huber `stage.phi` axis. The plans that drove a bare `prs`
+  global (`technique_I_cdsaxs`, `technique_K_tomography`, `technique_M_autonomous`) now drive
+  **`stage.phi`** (a `STG_pseudo` `PseudoSingle`, limits ±90°, records as `stage_phi`). The
+  `prs_range`/`prs_start`/`prs_stop` *parameter* names are retained for call-signature
+  compatibility. Guarded by `tests/test_smoke.py` (asserts `stage_phi` is the recorded axis; no
+  `prs` key appears). The sim harness models the Huber stage and defines no `prs`.
+
+### 6. (Resolved) `det_exposure_time` is a plan → call sites now `yield from`
+- **Status: FIXED (package-side).** Phase 2 (C5) made `det_exposure_time` a Bluesky plan. The ~37
+  technique/recipe call sites that called it bare (`det_exposure_time(t, t)`) — which created an
+  unconsumed generator and silently never set the exposure — now `yield from det_exposure_time(...)`.
+  Guarded by `tests/test_smoke.py::test_det_exposure_time_is_yielded_from` (spy asserts the plan
+  is actually consumed; verified to fail if a `yield from` is dropped). The only remaining bare
+  occurrence is the **anti-pattern example in `technique_N`'s docstring** (intentional).
+- **Open follow-up:** expose `det_exposure_time`'s commanded exposure as a **recordable signal**
+  so the per-run exposure lands in the stream (needed for the sample-system `ScanRecord.exposure_s`
+  — see `SAMPLE_SYSTEM_PLAN.md` §7.3). **Action:** add an `exposure_time` readback Signal to the
+  detector/exposure device in the profile.
+
+### 7. (Resolved 2026-06-17) Aggregate attenuation / transmission readable
+- **Status: RESOLVED by the new `AttenuatorSet`.** The sample-history `ScanRecord.transmission` /
+  `attenuation_factor` (`SAMPLE_SYSTEM_PLAN.md` §7.3) wanted the net transmission as a single
+  recorded value. The profile now ships an energy-aware aggregate **`attenuation`**
+  (`AttenuatorSet`, `src/smi_beamline/devices/attenuators.py`) exposing
+  `attenuation.transmission` (0–1) and `attenuation.attenuation_factor` (1/T), computed from the
+  inserted foils + live energy via CXRO curves and **already added to the scan baseline**. The
+  history recorder reads them from the baseline stream — no plan-side `.get()`.
+- **Freshness caveat (not debt, just usage):** these are *computed* `Signal`s (not PVs); they
+  refresh on a whole-device `attenuation.read()`/`.trigger()` (which baseline capture does) but
+  **not** on a bare `bps.rd(attenuation.transmission)` of the sub-signal. Read the whole device
+  (`yield from bps.rd(attenuation)`), or call `attenuation.compute()` first, if reading mid-plan
+  rather than from baseline. Energy-dependent (clamped 2000–25000 eV).
+
 ## Adding a new debt item
 
 When you must read/drive hardware that has no message path:
