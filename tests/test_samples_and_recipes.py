@@ -13,7 +13,12 @@ def test_sample_basic():
                md={"project_name": "p"})
     assert s.piezo_moves() == {"x": 55000.0, "y": 5000.0}
     assert s.hexa_moves() == {}
-    assert s.base_md() == {"sample_name": "s1", "project_name": "p"}
+    # base_md() now also carries the stable id/holder/slot join-keys (SAMPLE_SYSTEM_PLAN §2.4),
+    # so assert the stable keys instead of full equality (sample_id is a minted uuid).
+    bm = s.base_md()
+    assert bm["sample_name"] == "s1"
+    assert bm["project_name"] == "p"
+    assert "sample_id" in bm
 
 
 def test_samplelist_from_columns_shared():

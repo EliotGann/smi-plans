@@ -40,7 +40,19 @@ Authoring rules (the short version)
     anywhere.
 """
 
-from ._samples import Sample, SampleList  # noqa: F401  (pure python, always safe)
+from ._samples import (  # noqa: F401  (pure python, always safe)
+    AlignmentResult,
+    Holder,
+    Magazine,
+    Position,
+    Sample,
+    SampleList,
+    ScanRecord,
+    SpotSummary,
+    HolderTransform,
+    slot_to_position,
+)
+from ._store import SampleStore  # noqa: F401  (pure python; redis imported lazily in from_redis)
 
 # The device-dependent modules import bluesky lazily; importing the package outside the
 # beamline env should still expose the sample model without exploding.
@@ -51,4 +63,19 @@ except Exception:  # pragma: no cover
     _core = None
     _compose = None
 
-__all__ = ["Sample", "SampleList", "_preprocessors", "_core", "_compose"]
+__all__ = [
+    "Sample",
+    "SampleList",
+    "Position",
+    "Holder",
+    "Magazine",
+    "AlignmentResult",
+    "ScanRecord",
+    "SpotSummary",
+    "HolderTransform",
+    "slot_to_position",
+    "SampleStore",
+    "_preprocessors",
+    "_core",
+    "_compose",
+]
