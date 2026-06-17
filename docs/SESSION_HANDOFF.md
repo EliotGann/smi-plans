@@ -2,10 +2,113 @@
 
 > **Purpose:** resume this work on another machine. Captures exactly where we are, what's
 > committed (and where), what's verified vs. not, and the next concrete steps.
-> **Last updated:** Phase 4 (factory + package) Steps 1–4b DONE & hardware-confirmed: device
-> classes moved to `src/smi_beamline/`, `make_devices(context)` factory with a timed loader is the
-> LIVE boot path, all import-time `get_ipython()` grabs gone except the 5 in `base.py`. **Next:
-> make `base.py` worker-aware so QS boots headless (the real Q-QS step) + the 4 QS artifacts.**
+> **Last updated:** Phase 4 — **the profile now loads headless in the bluesky-queueserver worker**
+> (`base.py` is worker-aware), **proven** with `qserver-list-plans-devices` (139 devices + 38 plans,
+> 0 ignored). Pure-plan modules moved to `src/smi_beamline/plans/`. **Next: the deployment-side QS
+> artifacts only** (`user_group_permissions.yaml`, a local queue-Redis, plain-vs-IPython-kernel
+> worker) — the code is QS-ready.
+
+---
+
+## Latest session (Phase 4 — QS worker-aware + plans/) — TL;DR
+
+Branch **`phase4-factory-package`** (off the untouched `phase3-device-cleanliness`). **Not pushed.**
+**Hardware-confirmed** for the terminal path; **the headless worker load is verified with real QS
+tooling.** Safe suite: **128 passed, 4 skipped, 15 deselected.**
+
+Commits since the last handoff (newest first; the first three were made by staff):
+```
+b25ee1f Phase 4: relocate the pure-plan modules to src/smi_beamline/plans/
+fef747e QS: fix the 2 plans with device-object defaults; correct the pixi qs tasks
+80e4628 Phase 4: make the bootstrap worker-aware -- profile loads headless in the QS worker
+77699d0 Set tiled clients to point at acquisition nodes                       (staff)
+46ac465 Sample store: Redis db=2 link + _context seam accessor                (staff)
+2fb9db3 Attenuators: energy-aware attenuation factor + foil auto-select       (staff)
+```
+
+### THE milestone: the profile loads headless in the QS worker
+`base.py` / `base_dev.py` / `utils.py` now detect the worker via
+`bluesky_queueserver.is_re_worker_active()` and guard the IPython/interactive-only code:
+- **`configure_base` gets an explicit namespace** — the live IPython `user_ns` in the terminal, a
+  plain `{}` dict in the worker (there is no IPython namespace there). It populates RE/db/bec/sd
+  into that dict; we re-export **RE/bec/sd/db as MODULE globals** so `from smibase.base import *`
+  lands them in the exec'd profile namespace — exactly where the worker reads `RE`
+  (`worker.py: self._re_namespace.get("RE")`). `magics`/`mpl` are off in the worker.
+- **Interactive Tiled READING clients (Duo push, `username=None`/`from_uri` w/o key) are skipped in
+  the worker** (`db=None` there); the API-keyed WRITING clients are unchanged.
+- **Prompt (`ip.prompts`), `configure_olog`, and `hardware_check()`'s namespace lookup** are guarded
+  behind "real IPython and not worker."
+- Renamed the misleading `_smiclasses_context` alias → `_seam`.
+
+**Verified (real QS tooling, not a mock):** `qserver-list-plans-devices --startup-dir startup`
+reports **"created successfully"** — the whole profile loads in the plain-Python worker, **139
+devices + 38 plans introspected, 0 ignored**, no `get_ipython` crash / Duo hang / prompt error.
+(Run it any time with `pixi run -e qs qs-list`.)
+
+### QS plan-signature fixes
+The two plans QS initially rejected (a device OBJECT as a parameter default can't be serialized):
+- `fast_align_procedure(detector=pil2M, ...)` → `detector=None`, resolve to `pil2M` inside.
+- `bisection_search_plan(motor=piezo.y, ...)` → `motor=None`, resolve to `piezo.y` inside.
+No-arg calls behave identically. After this, **0 plans are ignored** (was 36+2 → 38 valid).
+A repo-wide scan found no other device-object defaults.
+
+### pixi `[feature.qs.tasks]` corrected
+- `qs-backend`: `--profile-dir=.` (errored on this QS 0.0.23) → `--startup-dir=startup
+  --ignore-invalid-plans=ON`.
+- new **`qs-list`**: the headless QS-readiness smoke test (`qserver-list-plans-devices`).
+
+### Relocation: pure-plan modules → `src/smi_beamline/plans/`
+Per the "move just the plan modules" decision, the 4 smibase modules that build **no device
+instances** (only plans/functions) were `git mv`'d into the package:
+`{alignment, config, humidity_cell, utils}` → `src/smi_beamline/plans/`. Their relative
+`from .pilatus import ...` etc. (which pointed within `smibase`) became absolute
+`from smibase.X import ...` (they import the live instances from `smibase`); `alignment`↔`utils`
+stays relative. Factory `DEVICE_MODULES` updated to load them from `smi_beamline.plans.*`.
+
+### Current layout
+```
+src/smi_beamline/
+  devices/      24 device-CLASS modules (import-clean)
+  plans/        4 pure-plan modules (alignment, config, humidity_cell, utils)   <- new
+  instances.py  make_devices(context): the factory + Option-C timed loader
+startup/
+  smibase/      24 INSTANCE-BUILDER modules (build pil2M/energy/... + baselines) -- stay for now
+  startup.py    entry point: src on path -> bootstrap (base/base_dev) -> make_devices() -> globals()
+```
+
+### Staff commits folded in (context)
+- `2fb9db3` energy-aware attenuation factor + foil auto-select (new `devices/attenuators.py`,
+  `attenuator_data.py`, `_config.py` keys, tests).
+- `46ac465` persistent **sample/holder store** on Redis db=2 (`samplestore`) + `_context`
+  `get_sample_store()` accessor (same `{}`-fallback pattern as `mdsave`); `base.py` injects it.
+- `77699d0` Tiled clients tagged `tiled-qos: acquisition`.
+All green in the 128-passed suite.
+
+### NOT done — remaining QS work is DEPLOYMENT/CONFIG, not code (deferred per staff)
+The code is QS-ready (loads headless). To actually RUN a queue:
+1. **`user_group_permissions.yaml`** with a `root` group — without it the manager runs but clients
+   cannot submit plans. Author from a template (place in `startup/`).
+2. **A queue/state Redis on `localhost:6379`** (SEPARATE from the metadata Redis) — the manager
+   (`start-re-manager`) won't even start without it. No `redis-server` binary is in the pixi envs
+   yet (`qs-backend` failed here only at this step; env-open itself is proven via `qs-list`).
+3. **Worker mode decision (Q-QS-worker):** plain-Python (pure queue) vs **IPython-kernel**
+   (`--use-ipython-kernel ON`: queue + a Jupyter console you can attach to the SAME RunEngine).
+   Recommended: IPython-kernel for SMI. NB: in the IPython-kernel worker `get_ipython()` returns a
+   REAL kernel, so revisit the `base.py` guards (they currently key off `is_re_worker_active()`,
+   which is True in BOTH worker modes — that is correct, but confirm prompt/magics behavior in the
+   kernel).
+4. **Deployment infra** (production only): systemd units / ansible (the `pixi.toml` comment), an
+   always-on deployed queue-Redis, the httpserver behind auth.
+
+### Optional structural tidy-ups still deferred (low value)
+The 24 `smibase` instance-builder modules remain in `startup/smibase/`; converting them to explicit
+`make_X(context)` builders in `instances.py` (plan §3) is the remaining structural work — not needed
+for QS. Also still deferred: `config/pvs.py` PV-string extraction; `detectors.py`/`motion.py` file
+merges; `pip install -e` the package (currently `src/` is added to `sys.path`).
+
+---
+
+## (Historical) earlier Phase 4 follows
 
 ---
 
@@ -581,16 +684,18 @@ hardware-semantics decisions before changing them.
 
 1. `cd /nsls2/data1/smi/shared/config/bluesky/profile_collection && git checkout phase4-factory-package`
    (Phase 4 lives here; `phase3-device-cleanliness` is the untouched rollback point.)
-2. Read `smi-plans/docs/STARTUP_AUDIT.md` (§1, §8) + `STARTUP_RESTRUCTURE_PLAN.md` (§7 QS, §7.3
-   artifacts). The Phase-4 TL;DR at the top of THIS file is the live state.
-3. `pixi run -e test test` to confirm green (expect **95 passed, 4 skipped, 15 deselected**). The
-   old ~1-in-8 timer flake is fixed; the teardown `ChannelAccessException` is harmless GC noise
-   (exit 0).
-4. **Phases 0–3 done; Phase 4 Steps 1–4b done & hardware-confirmed (factory is the live boot path).**
-   Next is the **QS-headless work**: make `base.py` worker-aware (the 5 grabs + prompt/Duo/Tiled
-   behind `is_re_worker_active()` guards), guard `utils.hardware_check()`, then the 4 QS artifacts
-   (§7.3). This is the **Q-QS** decision point — full clean bootstrap vs. minimal worker-guards.
-   Test the worker path with `pixi run qs.qs-backend`.
+2. Read `STARTUP_RESTRUCTURE_PLAN.md` §7.3 (the QS deployment artifacts). The Phase-4 TL;DR at the
+   top of THIS file is the live state.
+3. `pixi run -e test test` → green (expect **128 passed, 4 skipped, 15 deselected**). The old timer
+   flake is fixed; the teardown `ChannelAccessException` is harmless GC noise (exit 0).
+4. `pixi run -e qs qs-list` → confirms the profile loads **headless in the QS worker**
+   ("created successfully", 139 devices + 38 plans, 0 ignored). This is the QS-readiness smoke test.
+5. **Phases 0–3 done; Phase 4 = factory + package + QS-worker-aware, all proven.** The remaining
+   work is **deployment/config, not code** (handoff TL;DR "NOT done"): `user_group_permissions.yaml`
+   (+`root` group), a queue-Redis on localhost:6379 (no `redis-server` binary in the envs yet),
+   and the **Q-QS-worker** decision (plain-Python vs `--use-ipython-kernel ON`). Then a real local
+   `start-re-manager`. Optional structural tidy-up: convert the 24 `smibase` instance-builders to
+   `make_X(context)`.
 
 ---
 
