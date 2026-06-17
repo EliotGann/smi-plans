@@ -184,7 +184,7 @@ def potential_step_run(name, potentials, *, set_potential, potential_readback=No
     except Exception:
         pass
 
-    det_exposure_time(t, t)                                      # noqa: F821
+    yield from det_exposure_time(t, t)                                      # noqa: F821
     sample_name = fname(name, *name_tokens)
 
     # POTENTIAL is the scan axis (medium speed): its `move` reuses the caller-supplied
@@ -297,7 +297,7 @@ def operando_kinetics_run(name, hold_potential, *, set_potential, potential_read
     except Exception:
         pass
 
-    det_exposure_time(t, t)                                      # noqa: F821
+    yield from det_exposure_time(t, t)                                      # noqa: F821
 
     # The scan axis is TIME: a custom :class:`_compose.ScanAxis` over the (clamped) frame
     # indices, holding ``hold_potential`` for the whole series.  Its `move` paces the run (the
@@ -391,7 +391,7 @@ def doping_state_run(name, states, *, apply, measure_per_state=1, t=1.0, dets=No
     except Exception:
         pass
 
-    det_exposure_time(t, t)                                      # noqa: F821
+    yield from det_exposure_time(t, t)                                      # noqa: F821
     sample_name = fname(name, *name_tokens)
 
     # The scan axis is the (named) DOPING STATE: its `move` reuses the caller-supplied

@@ -5,18 +5,25 @@ technique_I_cdsaxs
 Archetype I -- CD-SAXS / CD-GISAXS critical-dimension grating metrology.
 
 Reconstruct a nanograting line/space cross-section (CD, sidewall angle, height, LER, pitch
-walking, overlay) by **rocking the** ``prs`` **(Precision Rotation Stage = phi) through reciprocal
-space** and recording one detector frame per angle.  The canonical measurement is ``prs``
-**-60 deg -> +60 deg in 121 points** on ``pil2M`` (SAXS); CD-GISAXS rocks ``prs`` (and/or the
-grazing incidence axis) at a shallow incidence with many more points (up to ~2001).
+walking, overlay) by **rocking the Huber** ``stage.phi`` **(phi = rotation about lab Y) through
+reciprocal space** and recording one detector frame per angle.  The canonical measurement is
+``stage.phi`` **-60 deg -> +60 deg in 121 points** on ``pil2M`` (SAXS); CD-GISAXS rocks
+``stage.phi`` (and/or the grazing incidence axis) at a shallow incidence with many more points
+(up to ~2001).
+
+.. note::
+    The rotation axis was historically the standalone ``prs`` (Precision Rotation Stage); it was
+    removed on the live beamline and replaced by the Huber ``stage.phi`` axis.  These plans now
+    drive ``stage.phi``.  The ``prs_range``/``prs_start``/``prs_stop`` *parameter* names are kept
+    for backward-compatible call signatures, but they configure the ``stage.phi`` rock.
 
 THE KEY FIX for CD-SAXS (Tenet 1): a phi rocking curve is **ONE logical experiment = ONE run**.
 The dominant legacy form (``legacy/30-user-CDSAXS.py::cd_saxs_new``, ``CFN .../run_tomo``)
 encodes a 121-point rock as **121 separate** ``bp.count`` **runs**, with the rocking angle /
 x / y / z / SDD / flux stuffed into the filename string via ``.position`` / ``.get()``.  Here a
-whole rock is a single ``bp.rel_scan(prs, ...)`` (or one :func:`_core.one_sample_run` with an
-``inner()`` doing ``mv(prs)`` + ``trigger_and_read`` per angle), so ``prs`` and the flux
-monitors ride in the document stream.
+whole rock is a single ``bp.rel_scan(stage.phi, ...)`` (or one :func:`_core.one_sample_run` with
+an ``inner()`` doing ``mv(stage.phi)`` + ``trigger_and_read`` per angle), so ``stage.phi`` and
+the flux monitors ride in the document stream.
 
 Gold reference: ``CDSAXS/.../test.py::cd_saxs_modern`` and ``legacy/30-user-Kline2.py::
 cd_saxs_modern`` -- ``bp.list_scan(dets + [piezo.x, piezo.y, piezo.z, pil2M.sample_distance_mm,
@@ -31,26 +38,26 @@ What this file gives you
 ------------------------
 * :func:`cdsaxs_dets` -- the standard CD-SAXS detector + flux-monitor list (``pil2M`` +
   ``pin_diode`` + ``xbpm3``), the reciprocal-space normalization channels.
-* :func:`cdsaxs_rock_run` -- ONE run = one full ``prs`` rocking curve on a single grating box.
+* :func:`cdsaxs_rock_run` -- ONE run = one full ``stage.phi`` rocking curve on a single grating box.
   Absolute or ``phi_offset``-centered; optional zero-order reference brackets (ref-A/ref-B).
-* :func:`cd_gisaxs_rock_run` -- CD-GISAXS: rock ``prs`` (or the grazing th axis) at a fixed
+* :func:`cd_gisaxs_rock_run` -- CD-GISAXS: rock ``stage.phi`` (or the grazing th axis) at a fixed
   shallow incidence, ONE run, more points.
 * :func:`cdsaxs_pitch_survey` -- multi-pitch x-offset survey: ONE rock-run per pitch column.
 * :func:`cdsaxs_ystitch_run` -- detector y-stitch (``pil2M_pos.y`` +/- 4.3 mm) to cover the 2M
   module gap, as two sub-scans (commented tradeoff: across runs vs within one run).
 * :func:`cdsaxs_bar` -- loop :func:`cdsaxs_rock_run` over a :class:`SampleList` (one rock/sample),
-  with ``prs`` as the scanned slow axis.
+  with ``stage.phi`` as the scanned slow axis.
 * :func:`example` / :func:`example_gisaxs` -- runnable, fully-specified examples.
 
 Idioms preserved (via _preprocessors): zero-order reference brackets (``phi_offset``), the
 ``pil2M_pos.y`` y-stitch for the module gap, ``xbpm3``/``pin_diode`` I0 normalization recorded
-in-stream, baseline capture of the SDD, cleanup (return ``prs`` to its start) on error.
+in-stream, baseline capture of the SDD, cleanup (return ``stage.phi`` to its start) on error.
 
 .. important::
     Beamline globals required at runtime (injected by the SMI profile collection; not
-    importable standalone): ``np``, ``bps``, ``bp`` (bluesky.plans), ``Signal``, ``prs``,
-    ``piezo``, ``stage``, ``pil2M``, ``pil2M_pos``, ``pin_diode``, ``xbpm3``,
-    ``det_exposure_time``.  ``prs`` is slow and in-vacuum, so it is the scanned axis and the
+    importable standalone): ``np``, ``bps``, ``bp`` (bluesky.plans), ``Signal``, ``stage``,
+    ``piezo``, ``pil2M``, ``pil2M_pos``, ``pin_diode``, ``xbpm3``,
+    ``det_exposure_time``.  ``stage.phi`` is slow and in-vacuum, so it is the scanned axis and the
     coarse (per-box) setup stays outside the rock.
 """
 
@@ -95,15 +102,15 @@ def cdsaxs_dets(*, saxs_det=None, pin=True, xbpm=True):
 
 
 # ---------------------------------------------------------------------------
-# Helper: a single rock as one run (rel_scan over prs)
+# Helper: a single rock as one run (rel_scan over stage.phi)
 # ---------------------------------------------------------------------------
 def _rock_one_run(sample_name, dets, prs_start, prs_stop, n, *, reads=None, baseline=None,
                   scan_name="cdsaxs_rock", geometry="transmission", md=None, relative=True):
-    """ONE run: rock ``prs`` from ``prs_start`` to ``prs_stop`` in ``n`` points.
+    """ONE run: rock ``stage.phi`` from ``prs_start`` to ``prs_stop`` in ``n`` points.
 
-    Uses a coordinated ``bp.rel_scan`` / ``bp.scan`` so ``prs`` (and any extra ``reads``) are
-    recorded automatically as event fields -- the whole rocking curve is a single run.  The SDD
-    and other constants are recorded once via the baseline.  This is the workhorse the public
+    Uses a coordinated ``bp.rel_scan`` / ``bp.scan`` so ``stage.phi`` (and any extra ``reads``)
+    are recorded automatically as event fields -- the whole rocking curve is a single run.  The
+    SDD and other constants are recorded once via the baseline.  This is the workhorse the public
     rock plans build on.
     """
     scan = bp.rel_scan if relative else bp.scan
@@ -116,7 +123,7 @@ def _rock_one_run(sample_name, dets, prs_start, prs_stop, n, *, reads=None, base
     )
 
     def _plan():
-        yield from scan(all_dets, prs, prs_start, prs_stop, n, md=run_md)   # noqa: F821
+        yield from scan(all_dets, stage.phi, prs_start, prs_stop, n, md=run_md)  # noqa: F821
 
     body = _plan()
     if baseline:
@@ -131,11 +138,11 @@ def cdsaxs_rock_run(name, prs_range=(-60, 60, 121), *, t=1.0, dets=None, reads=N
                     phi_offset=0.0, absolute=False, ref_brackets=True, geometry="transmission",
                     baseline=None, md=None,
                     name_tokens=("sdd{pil2M_sample_distance_mm}", "bpm{xbpm3_sumX}")):
-    """ONE run: a full ``prs`` rocking curve (-60 -> +60 deg, 121 pts canonical) on one box.
+    """ONE run: a full ``stage.phi`` rocking curve (-60 -> +60 deg, 121 pts canonical) on one box.
 
     The grating box must already be coarse-positioned and aligned (chi/theta leveled, on the
-    rotation center) by the caller / :func:`cdsaxs_bar`; this plan only does the rock.  ``prs``
-    is the scanned axis and is recorded automatically.
+    rotation center) by the caller / :func:`cdsaxs_bar`; this plan only does the rock.
+    ``stage.phi`` is the scanned axis and is recorded automatically.
 
     Parameters
     ----------
@@ -153,11 +160,11 @@ def cdsaxs_rock_run(name, prs_range=(-60, 60, 121), *, t=1.0, dets=None, reads=N
         Extra readables recorded each angle (default: positions ``[piezo.x, piezo.y, piezo.z]``
         so the box coordinates are in the data, as in ``cd_saxs_modern``).
     phi_offset : float
-        The zero-order ``prs`` angle for this grating (legacy ``phi_offset`` / ``theta_zer``);
+        The zero-order ``stage.phi`` angle for this grating (legacy ``phi_offset`` / ``theta_zer``);
         the rock is centered here unless ``absolute``.
     absolute : bool
-        If True, ``prs_range`` is absolute ``prs`` angles (uses ``bp.scan``); else it is
-        relative to the current ``prs`` after moving to ``phi_offset`` (uses ``bp.rel_scan``).
+        If True, ``prs_range`` is absolute ``stage.phi`` angles (uses ``bp.scan``); else it is
+        relative to the current ``stage.phi`` after moving to ``phi_offset`` (uses ``bp.rel_scan``).
     ref_brackets : bool
         If True (default), bracket the rock with a single-frame zero-order reference *in the
         SAME run sequence* before and after (the legacy ref-A / ref-B brackets, Kline2
@@ -183,34 +190,34 @@ def cdsaxs_rock_run(name, prs_range=(-60, 60, 121), *, t=1.0, dets=None, reads=N
         except Exception:
             baseline = []
 
-    det_exposure_time(t, t)                                        # noqa: F821
+    yield from det_exposure_time(t, t)                             # noqa: F821
     start, stop, n = prs_range
     sample_name = fname(name, *name_tokens)
 
     def _go():
         # Move to the zero-order phi first so a relative rock is centered on it.
-        yield from bps.mv(prs, phi_offset)                         # noqa: F821
+        yield from bps.mv(stage.phi, phi_offset)                   # noqa: F821
         # Optional zero-order reference frame BEFORE the rock (own short run / filename).
         if ref_brackets:
             yield from _rock_one_run(
                 fname(name + "_ref-A", *name_tokens), dets, 0, 0, 1, reads=reads,
                 baseline=baseline, scan_name="cdsaxs_ref", geometry=geometry, md=md,
                 relative=True)
-        # The rocking curve itself: ONE run over prs.
+        # The rocking curve itself: ONE run over the Huber phi axis.
         yield from _rock_one_run(
             sample_name, dets, start, stop, n, reads=reads, baseline=baseline,
             scan_name="cdsaxs_rock", geometry=geometry, md=md, relative=not absolute)
         # Optional zero-order reference frame AFTER the rock.
         if ref_brackets:
-            yield from bps.mv(prs, phi_offset)                     # noqa: F821
+            yield from bps.mv(stage.phi, phi_offset)               # noqa: F821
             yield from _rock_one_run(
                 fname(name + "_ref-B", *name_tokens), dets, 0, 0, 1, reads=reads,
                 baseline=baseline, scan_name="cdsaxs_ref", geometry=geometry, md=md,
                 relative=True)
 
-    # Always return prs to the zero-order angle, even on error/abort.
+    # Always return phi to the zero-order angle, even on error/abort.
     def _cleanup():
-        yield from bps.mv(prs, phi_offset)                         # noqa: F821
+        yield from bps.mv(stage.phi, phi_offset)                   # noqa: F821
 
     return (yield from cleanup_wrapper(_go(), _cleanup))
 
@@ -224,8 +231,8 @@ def cd_gisaxs_rock_run(name, *, ai0, ai, phi_offset=0.0, prs_range=(-5, 5, 2001)
     """ONE run: CD-GISAXS phi rock at a fixed grazing incidence (legacy ``cd_gisaxs_phi``).
 
     Sets the grazing incidence angle once (``th_axis`` -> ``ai0 + ai``), records it as a Signal,
-    then rocks ``prs`` over ``prs_range`` (relative to ``phi_offset``) in a single run.  Far more
-    points than transmission CD-SAXS (the legacy default is 2001 over +/-5 deg) because the GI
+    then rocks ``stage.phi`` over ``prs_range`` (relative to ``phi_offset``) in a single run.  Far
+    more points than transmission CD-SAXS (the legacy default is 2001 over +/-5 deg) because the GI
     rod is sampled finely.
 
     Parameters
@@ -237,7 +244,7 @@ def cd_gisaxs_rock_run(name, *, ai0, ai, phi_offset=0.0, prs_range=(-5, 5, 2001)
     ai : float
         Incident angle (deg) above ``ai0`` to hold during the rock.
     phi_offset : float
-        Zero-order ``prs`` angle (legacy ``phi0``).
+        Zero-order ``stage.phi`` angle (legacy ``phi0``).
     prs_range : (start, stop, n)
         Rock definition relative to ``phi_offset``.  Default ``(-5, 5, 2001)``.
     th_axis : positioner, optional
@@ -262,20 +269,20 @@ def cd_gisaxs_rock_run(name, *, ai0, ai, phi_offset=0.0, prs_range=(-5, 5, 2001)
         except Exception:
             baseline = []
 
-    det_exposure_time(t, t)                                        # noqa: F821
+    yield from det_exposure_time(t, t)                             # noqa: F821
     start, stop, n = prs_range
     sample_name = fname(name + "_gisaxs", *name_tokens)
 
     def _go():
         yield from bps.mv(th_axis, ai0 + ai)                       # set grazing incidence once
-        yield from bps.mv(prs, phi_offset)                         # noqa: F821
+        yield from bps.mv(stage.phi, phi_offset)                   # noqa: F821
         yield from bps.mv(incident_angle, float(ai))
         yield from _rock_one_run(
             sample_name, dets, start, stop, n, reads=reads, baseline=baseline,
             scan_name="cd_gisaxs_rock", geometry="reflection", md=md, relative=True)
 
     def _cleanup():
-        yield from bps.mv(prs, phi_offset)                         # noqa: F821
+        yield from bps.mv(stage.phi, phi_offset)                   # noqa: F821
 
     return (yield from cleanup_wrapper(_go(), _cleanup))
 
@@ -354,13 +361,13 @@ def cdsaxs_ystitch_run(name, prs_range=(-60, 60, 121), *, t=1.0, dets=None, phi_
 # ---------------------------------------------------------------------------
 def cdsaxs_bar(samples, *, prs_range=(-60, 60, 121), t=1.0, dets=None, phi_offset=0.0,
                ref_brackets=True, md=None):
-    """Rock each grating box on the bar; ONE run (one full ``prs`` rock) per box.
+    """Rock each grating box on the bar; ONE run (one full ``stage.phi`` rock) per box.
 
     ``samples`` is a :class:`SampleList`.  Each box is coarse-positioned (piezo x/y/z and, if
-    set, chi via ``hexa_*`` or the sample md) and then rocked.  ``prs`` is the slow / in-vacuum
-    scanned axis (the rocking curve), traversed once per box.  Per-sample ``phi_offset`` can be
-    supplied in the sample's md as ``{"phi_offset": <deg>}``; otherwise the shared default is
-    used.
+    set, chi via ``hexa_*`` or the sample md) and then rocked.  ``stage.phi`` is the slow /
+    in-vacuum scanned axis (the rocking curve), traversed once per box.  Per-sample ``phi_offset``
+    can be supplied in the sample's md as ``{"phi_offset": <deg>}``; otherwise the shared default
+    is used.
 
     Note: chi/theta leveling and rotation-center alignment are prerequisites (see
     ``folder_CDSAXS.md`` and the ``CDSAXS/`` auto-alignment subsystem); this plan assumes each
@@ -380,8 +387,8 @@ def cdsaxs_bar(samples, *, prs_range=(-60, 60, 121), t=1.0, dets=None, phi_offse
 def example():
     """3-box CD-SAXS bar: full -60..+60 deg 121-pt rock per box, with ref brackets.
 
-    ``prs`` (the in-vacuum rotation stage) is the scanned axis; each box's rock is ONE run with
-    ``pil2M`` + ``pin_diode`` + ``xbpm3`` and the box coordinates recorded in-stream.  Run
+    ``stage.phi`` (the in-vacuum rotation stage) is the scanned axis; each box's rock is ONE run
+    with ``pil2M`` + ``pin_diode`` + ``xbpm3`` and the box coordinates recorded in-stream.  Run
     with::
 
         RE(technique_I_cdsaxs.example())

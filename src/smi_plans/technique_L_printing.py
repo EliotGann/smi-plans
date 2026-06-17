@@ -243,7 +243,7 @@ def printer_triggered_run(name, *, n_events=None, until_stopped=False, t=1.0, de
     if n_events is None and not until_stopped:
         n_events = 1                                               # safe default: one fire
 
-    det_exposure_time(t, t)                                        # noqa: F821
+    yield from det_exposure_time(t, t)                                        # noqa: F821
     sample_name = fname(name, *name_tokens)
 
     def _measure():
@@ -326,7 +326,7 @@ def print_crystallization_followup_run(name, *, duration_s=1800, waxs_arc=(0, 13
         except Exception:
             baseline = []
 
-    det_exposure_time(t, t)                                        # noqa: F821
+    yield from det_exposure_time(t, t)                                        # noqa: F821
     start, stop, n = waxs_arc
     arc_positions = list(np.linspace(start, stop, n))             # noqa: F821
     sample_name = fname(name + "_crystallization", *name_tokens)

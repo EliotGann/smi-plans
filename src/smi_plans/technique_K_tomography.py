@@ -4,54 +4,60 @@ technique_K_tomography
 
 Archetype K -- SAXS/WAXS tomography & texture / pole-figure.
 
-Rotation series on the ``prs`` (Precision Rotation Stage = phi) axis for **tomographic
+Rotation series on the Huber ``stage.phi`` (phi = rotation about lab Y) axis for **tomographic
 reconstruction** or **texture / pole-figure** analysis:
 
-* **Tomography:** rock ``prs`` through a full ``-90 -> +90 deg`` series (recording one frame per
-  angle) and reconstruct a SAXS/WAXS cross-section.  With a coupled translation this becomes a
+* **Tomography:** rock ``stage.phi`` through a full ``-90 -> +90 deg`` series (recording one frame
+  per angle) and reconstruct a SAXS/WAXS cross-section.  With a coupled translation this becomes a
   sinogram.
-* **Texture / pole-figure GIWAXS:** rock ``prs`` (in-plane orientation) at a *fixed grazing
+* **Texture / pole-figure GIWAXS:** rock ``stage.phi`` (in-plane orientation) at a *fixed grazing
   incidence* to map crystallographic texture, optionally across WAXS-arc positions.
+
+.. note::
+    The rotation axis was historically the standalone ``prs`` (Precision Rotation Stage); it was
+    removed on the live beamline and replaced by the Huber ``stage.phi`` axis.  These plans now
+    drive ``stage.phi``.  The ``prs_range`` *parameter* name is kept for backward-compatible call
+    signatures, but it configures the ``stage.phi`` rotation.
 
 THE KEY POINT (Tenet 1): a rotation series is ONE logical experiment = ONE run.  The legacy
 form (``CFN/Yugang/2026C1_Tomo.py::run_tomo``) does ``for theta: mv(prs, theta);
-bp.count(num=1)`` -> 181 separate runs with ``prs`` and ``xbpm3.sumX`` baked into the filename.
-Here a whole series is a single ``bp.rel_scan(prs, ...)`` (or one :func:`_core.one_sample_run`
-with ``inner()`` doing ``mv(prs)`` + ``trigger_and_read``), so ``prs`` and the flux monitor ride
-in the document stream.
+bp.count(num=1)`` -> 181 separate runs with the angle and ``xbpm3.sumX`` baked into the filename.
+Here a whole series is a single ``bp.rel_scan(stage.phi, ...)`` (or one
+:func:`_core.one_sample_run` with ``inner()`` doing ``mv(stage.phi)`` + ``trigger_and_read``), so
+``stage.phi`` and the flux monitor ride in the document stream.
 
-``prs`` is slow and in-vacuum, so it is the **scanned / outermost axis**; any coarse
+``stage.phi`` is slow and in-vacuum, so it is the **scanned / outermost axis**; any coarse
 positioning, alignment, and WAXS-arc setup stay outside the rotation.
 
-Gold reference: ``CFN/Yugang/2026C1_Tomo.py::run_tomo`` (the ``prs`` rotation series, ``pil2M``
+Gold reference: ``CFN/Yugang/2026C1_Tomo.py::run_tomo`` (the rotation series, ``pil2M``
 + ``pil900KW``, ``xbpm3`` flux).  Coupled rotation/translation: ``legacy/34-oleg.py::aaron_rot``
-and ``legacy/35-oleg-cube.py`` (``bp.inner_product_scan([pil2M], N, prs, ..., stage.x, ...,
+and ``legacy/35-oleg-cube.py`` (``bp.inner_product_scan([pil2M], N, <rot>, ..., stage.x, ...,
 piezo.y, ...)`` -- the sinogram idiom).  Texture/pole-figure: ``legacy/30-user-Kang.py::
-rotation_saxs`` (``bp.grid_scan(dets, prs, *prs_range, waxs, *waxs_range, 1)``) and
-``legacy/30-user-Tiwale.py::SAXS_S_edge_allprs`` (rock ``prs`` 1001 pts at fixed grazing
+rotation_saxs`` (``bp.grid_scan(dets, <rot>, *rot_range, waxs, *waxs_range, 1)``) and
+``legacy/30-user-Tiwale.py::SAXS_S_edge_allprs`` (rock the rotation axis 1001 pts at fixed grazing
 ``prs0 = 1.275``).
 
 What this file gives you
 ------------------------
 * :func:`tomo_dets` -- the standard tomography detector + flux-monitor list.
-* :func:`tomography_run` -- ONE run: a ``prs`` rotation series on a single sample
-  (``bp.rel_scan`` over ``prs``), with the option to *couple a translation* for a sinogram
+* :func:`tomography_run` -- ONE run: a ``stage.phi`` rotation series on a single sample
+  (``bp.rel_scan`` over ``stage.phi``), with the option to *couple a translation* for a sinogram
   (``bp.inner_product_scan`` / ``scan_nd`` -- the 34/35-oleg idiom) still as ONE run.
-* :func:`texture_pole_figure_run` -- ONE run: rock ``prs`` at a fixed incidence angle (recording
-  ``prs`` + incident angle), optionally across WAXS-arc positions.
+* :func:`texture_pole_figure_run` -- ONE run: rock ``stage.phi`` at a fixed incidence angle
+  (recording ``stage.phi`` + incident angle), optionally across WAXS-arc positions.
 * :func:`tomography_bar` -- loop :func:`tomography_run` over a :class:`SampleList` (one
-  series/sample), with ``prs`` as the scanned slow axis.
+  series/sample), with ``stage.phi`` as the scanned slow axis.
 * :func:`example` / :func:`example_texture` / :func:`example_sinogram` -- runnable examples.
 
-Idioms preserved: ``prs`` slow/in-vacuum as the scanned axis (outermost), coupled
+Idioms preserved: ``stage.phi`` slow/in-vacuum as the scanned axis (outermost), coupled
 rotation/translation sinograms (oleg ``inner_product_scan``), arc-conditional dets / arc as a
 second axis for texture (Kang), ``xbpm3`` flux recorded in-stream, baseline capture of the SDD,
-cleanup (return ``prs``) on error.
+cleanup (return ``stage.phi``) on error.
 
 .. important::
     Beamline globals required at runtime (injected by the SMI profile collection; not
-    importable standalone): ``np``, ``bps``, ``bp`` (bluesky.plans), ``Signal``, ``prs``,
-    ``piezo``, ``stage``, ``waxs``, ``pil2M``, ``pil900KW``, ``pil2M_pos``, ``xbpm3``,
+    importable standalone): ``np``, ``bps``, ``bp`` (bluesky.plans), ``Signal``, ``stage``,
+    ``piezo``, ``waxs``, ``pil2M``, ``pil900KW``, ``pil2M_pos``, ``xbpm3``,
     ``pin_diode``, ``det_exposure_time``.
 """
 
@@ -97,24 +103,24 @@ def tomo_dets(*, saxs=True, waxs=True, pin=True, xbpm=True):
 
 
 # ---------------------------------------------------------------------------
-# One run = one prs rotation series (optionally coupled to a translation)
+# One run = one stage.phi rotation series (optionally coupled to a translation)
 # ---------------------------------------------------------------------------
 def tomography_run(name, prs_range=(-90, 90, 181), *, t=1.0, dets=None, reads=None,
                    translate_axis=None, translate_range=None, geometry="transmission",
                    baseline=None, md=None,
                    name_tokens=("sdd{pil2M_sample_distance_mm}", "bpm{xbpm3_sumX}")):
-    """ONE run: a ``prs`` rotation series on a single sample (tomography / sinogram).
+    """ONE run: a ``stage.phi`` rotation series on a single sample (tomography / sinogram).
 
-    The whole rotation is a single run (Tenet 1).  ``prs`` is the scanned axis and is recorded
-    automatically; ``xbpm3`` / ``pin_diode`` ride in the stream as detectors.
+    The whole rotation is a single run (Tenet 1).  ``stage.phi`` is the scanned axis and is
+    recorded automatically; ``xbpm3`` / ``pin_diode`` ride in the stream as detectors.
 
     Two modes:
-      * **Pure rotation** (``translate_axis is None``): ``bp.rel_scan(dets, prs, start, stop,
+      * **Pure rotation** (``translate_axis is None``): ``bp.rel_scan(dets, stage.phi, start, stop,
         n)`` -- a tomographic projection series (mirrors ``run_tomo``).
       * **Coupled rotation + translation** (sinogram): if ``translate_axis`` and
-        ``translate_range`` are given, the translation is swept *together with* ``prs`` in a
+        ``translate_range`` are given, the translation is swept *together with* ``stage.phi`` in a
         single ``bp.inner_product_scan`` (the 34/35-oleg ``aaron_rot`` idiom) -- still ONE run,
-        with both ``prs`` and the translation recorded per event.
+        with both ``stage.phi`` and the translation recorded per event.
 
     Parameters
     ----------
@@ -130,10 +136,10 @@ def tomography_run(name, prs_range=(-90, 90, 181), *, t=1.0, dets=None, reads=No
     reads : list, optional
         Extra readables each event (default ``[]``; the scanned axes are recorded automatically).
     translate_axis : positioner, optional
-        If given (with ``translate_range``), couple this translation to ``prs`` for a sinogram
+        If given (with ``translate_range``), couple this translation to ``stage.phi`` for a sinogram
         (e.g. ``stage.x`` or ``piezo.x``).
     translate_range : (start, stop), optional
-        Start/stop for the coupled translation (same number of points as ``prs``, ``n``).
+        Start/stop for the coupled translation (same number of points as ``stage.phi``, ``n``).
     geometry : str
         ``"transmission"`` (SAXS/WAXS tomography) or ``"reflection"``.
     baseline : list, optional
@@ -152,7 +158,7 @@ def tomography_run(name, prs_range=(-90, 90, 181), *, t=1.0, dets=None, reads=No
         except Exception:
             baseline = []
 
-    det_exposure_time(t, t)                                        # noqa: F821
+    yield from det_exposure_time(t, t)                             # noqa: F821
     start, stop, n = prs_range
     sample_name = fname(name, *name_tokens)
     all_dets = list(dets) + reads
@@ -168,25 +174,25 @@ def tomography_run(name, prs_range=(-90, 90, 181), *, t=1.0, dets=None, reads=No
             # Coupled rotation + translation -> sinogram, ONE run (oleg inner_product_scan).
             ts, tf = translate_range
             yield from bp.inner_product_scan(                      # noqa: F821
-                all_dets, n, prs, start, stop, translate_axis, ts, tf, md=run_md)  # noqa: F821
+                all_dets, n, stage.phi, start, stop, translate_axis, ts, tf, md=run_md)  # noqa: F821
         else:
             # Pure rotation series, ONE run (run_tomo modernized).
-            yield from bp.rel_scan(all_dets, prs, start, stop, n, md=run_md)   # noqa: F821
+            yield from bp.rel_scan(all_dets, stage.phi, start, stop, n, md=run_md)   # noqa: F821
 
     body = _plan()
     if baseline:
         body = baseline_wrapper(body, baseline)
 
-    # Record the prs start so we can restore it on error/abort.
+    # Record the phi start so we can restore it on error/abort.
     prs_start_pos = {}
 
     def _capture():
-        prs_start_pos["pos"] = prs.position                       # noqa: F821
+        prs_start_pos["pos"] = stage.phi.position                  # noqa: F821
         yield from bps.null()
 
     def _cleanup():
         if "pos" in prs_start_pos:
-            yield from bps.mv(prs, prs_start_pos["pos"])           # noqa: F821
+            yield from bps.mv(stage.phi, prs_start_pos["pos"])     # noqa: F821
 
     def _go():
         yield from _capture()
@@ -196,18 +202,18 @@ def tomography_run(name, prs_range=(-90, 90, 181), *, t=1.0, dets=None, reads=No
 
 
 # ---------------------------------------------------------------------------
-# Texture / pole-figure: rock prs at a fixed incidence angle
+# Texture / pole-figure: rock stage.phi at a fixed incidence angle
 # ---------------------------------------------------------------------------
 def texture_pole_figure_run(name, prs_range=(-90, 90, 91), *, ai0=0.0, ai=0.0, th_axis=None,
                             waxs_arc=(0,), t=1.0, dets=None, reads=None, geometry="reflection",
                             baseline=None, md=None,
                             name_tokens=("ai{incident_angle}", "bpm{xbpm3_sumX}")):
-    """ONE run: rock ``prs`` at a fixed grazing incidence for texture / a pole figure.
+    """ONE run: rock ``stage.phi`` at a fixed grazing incidence for texture / a pole figure.
 
     Sets the grazing incidence once (``th_axis`` -> ``ai0 + ai``), records it as a Signal, then
-    rocks ``prs`` over ``prs_range`` -- the in-plane orientation sweep that builds a pole figure
-    (Kang ``rotation_saxs``; Tiwale ``SAXS_S_edge_allprs`` at fixed ``prs0``).  Optionally sweep
-    the WAXS arc as a *second* scanned axis (``bp.grid_scan(dets, prs, *prs_range, waxs,
+    rocks ``stage.phi`` over ``prs_range`` -- the in-plane orientation sweep that builds a pole
+    figure (Kang ``rotation_saxs``; Tiwale ``SAXS_S_edge_allprs`` at fixed ``prs0``).  Optionally
+    sweep the WAXS arc as a *second* scanned axis (``bp.grid_scan(dets, stage.phi, *prs_range, waxs,
     *waxs_arc_grid, 1)``) so the whole texture map is still ONE run.
 
     Parameters
@@ -223,7 +229,7 @@ def texture_pole_figure_run(name, prs_range=(-90, 90, 91), *, ai0=0.0, ai=0.0, t
     th_axis : positioner, optional
         Grazing-incidence axis (default ``piezo.th``).
     waxs_arc : sequence
-        WAXS-arc positions.  If a single value, ``prs`` is the only scanned axis; if multiple,
+        WAXS-arc positions.  If a single value, ``stage.phi`` is the only scanned axis; if multiple,
         the arc becomes a coupled outer axis via ``bp.grid_scan`` (one run).
     t, dets, reads, baseline, md, name_tokens :
         As in :func:`tomography_run`.  ``incident_angle`` is recorded so ``{incident_angle}``
@@ -241,7 +247,7 @@ def texture_pole_figure_run(name, prs_range=(-90, 90, 91), *, ai0=0.0, ai=0.0, t
         except Exception:
             baseline = []
 
-    det_exposure_time(t, t)                                        # noqa: F821
+    yield from det_exposure_time(t, t)                             # noqa: F821
     start, stop, n = prs_range
     sample_name = fname(name + "_texture", *name_tokens)
     all_dets = list(dets) + reads
@@ -257,14 +263,14 @@ def texture_pole_figure_run(name, prs_range=(-90, 90, 91), *, ai0=0.0, ai=0.0, t
         yield from bps.mv(th_axis, ai0 + ai)                       # set grazing incidence once
         yield from bps.mv(incident_angle, float(ai))
         if len(arc_vals) > 1:
-            # prs (in-plane) x waxs.arc texture map, ONE run (Kang grid_scan).
+            # stage.phi (in-plane) x waxs.arc texture map, ONE run (Kang grid_scan).
             wa0, wa1 = arc_vals[0], arc_vals[-1]
-            yield from bp.grid_scan(all_dets, prs, start, stop, n,      # noqa: F821
-                                    waxs, wa0, wa1, len(arc_vals))      # noqa: F821
+            yield from bp.grid_scan(all_dets, stage.phi, start, stop, n,  # noqa: F821
+                                    waxs, wa0, wa1, len(arc_vals))        # noqa: F821
         else:
             if arc_vals:
                 yield from bps.mv(waxs, arc_vals[0])               # noqa: F821
-            yield from bp.rel_scan(all_dets, prs, start, stop, n, md=run_md)   # noqa: F821
+            yield from bp.rel_scan(all_dets, stage.phi, start, stop, n, md=run_md)  # noqa: F821
 
     body = _plan()
     if baseline:
@@ -284,8 +290,8 @@ def tomography_bar(samples, *, prs_range=(-90, 90, 181), t=1.0, dets=None,
     """Run :func:`tomography_run` for each sample on the bar (ONE rotation series per sample).
 
     ``samples`` is a :class:`SampleList`.  Each sample is coarse-positioned (piezo/hexapod) then
-    rotated.  ``prs`` is the slow / in-vacuum scanned axis (the rotation series), traversed once
-    per sample.  Pass ``translate_axis`` / ``translate_range`` to make each series a coupled
+    rotated.  ``stage.phi`` is the slow / in-vacuum scanned axis (the rotation series), traversed
+    once per sample.  Pass ``translate_axis`` / ``translate_range`` to make each series a coupled
     sinogram.
     """
     for s in samples:
@@ -299,10 +305,10 @@ def tomography_bar(samples, *, prs_range=(-90, 90, 181), t=1.0, dets=None,
 # Examples
 # ---------------------------------------------------------------------------
 def example():
-    """SAXS/WAXS tomography: a -90..+90 deg, 181-pt ``prs`` rotation series on one sample.
+    """SAXS/WAXS tomography: a -90..+90 deg, 181-pt ``stage.phi`` rotation series on one sample.
 
     Mirrors ``CFN/Yugang/2026C1_Tomo.py::run_tomo(-90, 91, 181, ...)`` but as ONE run with
-    ``prs`` + ``xbpm3`` recorded in-stream.  Run with::
+    ``stage.phi`` + ``xbpm3`` recorded in-stream.  Run with::
 
         RE(technique_K_tomography.example())
     """
@@ -318,9 +324,9 @@ def example():
 
 
 def example_texture():
-    """Texture / pole-figure GIWAXS: rock ``prs`` -90..+90 deg at 0.2 deg incidence, arc=[0,26].
+    """Texture / pole-figure GIWAXS: rock ``stage.phi`` -90..+90 deg at 0.2 deg incidence, arc=[0,26].
 
-    Mirrors Kang ``rotation_saxs`` (``prs`` x ``waxs.arc`` grid) -- ONE run, with the incident
+    Mirrors Kang ``rotation_saxs`` (``stage.phi`` x ``waxs.arc`` grid) -- ONE run, with the incident
     angle recorded as a Signal.
     """
     yield from bps.mv(piezo.y, 4810)                              # noqa: F821 (coarse height)
@@ -330,10 +336,10 @@ def example_texture():
 
 
 def example_sinogram():
-    """SAXS sinogram: ``prs`` rotation coupled to a ``stage.x`` translation, ONE run.
+    """SAXS sinogram: ``stage.phi`` rotation coupled to a ``stage.x`` translation, ONE run.
 
-    Mirrors the ``legacy/34-oleg.py::aaron_rot`` ``inner_product_scan`` coupling (prs + stage.x
-    swept together) collapsed into a single tomography run.
+    Mirrors the ``legacy/34-oleg.py::aaron_rot`` ``inner_product_scan`` coupling (the rotation
+    axis + stage.x swept together) collapsed into a single tomography run.
     """
     yield from tomography_run(
         "octahedron_plate_cut", prs_range=(45, -50, 96), t=8.0,

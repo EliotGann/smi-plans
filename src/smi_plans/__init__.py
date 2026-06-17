@@ -34,7 +34,7 @@ Authoring rules (the short version)
 .. important::
     The technique files and ``_core``/``_preprocessors`` reference beamline globals injected
     by the SMI profile collection at runtime (``bps``, ``bpp``, ``Signal``, ``np``, ``piezo``,
-    ``stage``, ``waxs``, ``prs``, ``energy``, ``pil2M``, ``pil900KW``, ``xbpm2/3``,
+    ``stage``, ``waxs``, ``energy``, ``pil2M``, ``pil900KW``, ``xbpm2/3``,
     ``det_exposure_time``, alignment routines ...).  They are meant to be ``%run`` / imported
     inside the live beamline IPython session.  ``_samples`` is pure Python and importable
     anywhere.

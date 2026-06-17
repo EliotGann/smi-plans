@@ -203,7 +203,7 @@ def time_series_run(name, *, n_frames=None, duration=None, period=1.0, t=0.5, de
     elapsed = Signal(name="elapsed_s", value=0.0)               # noqa: F821
     frame_index = Signal(name="frame_index", value=0)          # noqa: F821
 
-    det_exposure_time(t, t)                                      # noqa: F821
+    yield from det_exposure_time(t, t)                                      # noqa: F821
     sample_name = fname(name, *name_tokens)
 
     def _measure():
@@ -288,7 +288,7 @@ def kinetics_run(name, *, action=None, n_frames=10, period=5.0, t=0.5, dets=None
     frame_index = Signal(name="frame_index", value=0)          # noqa: F821
     action_frames = set(action_on) if action_on is not None else None
 
-    det_exposure_time(t, t)                                      # noqa: F821
+    yield from det_exposure_time(t, t)                                      # noqa: F821
     sample_name = fname(name, *name_tokens)
 
     def _measure():
@@ -362,7 +362,7 @@ def blade_coating_run(name, *, coat_start=10.0, measure_pos=87.0, infuse_seconds
     elapsed = Signal(name="elapsed_s", value=0.0)               # noqa: F821
     frame_index = Signal(name="frame_index", value=0)          # noqa: F821
 
-    det_exposure_time(t, t)                                      # noqa: F821
+    yield from det_exposure_time(t, t)                                      # noqa: F821
     sample_name = fname(name, *name_tokens)
 
     def _measure():

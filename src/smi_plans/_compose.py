@@ -91,7 +91,7 @@ __all__ = [
 # Slowness hints used by the ordering guardrail (higher = slower / costlier to move).
 SPEED_FAST = 0      # piezo.x/y/z, fast Signals
 SPEED_MEDIUM = 1    # incident angle, energy (DCM), potential, RH
-SPEED_SLOW = 2      # waxs.arc, prs, temperature (equilibration), anything in-vacuum
+SPEED_SLOW = 2      # waxs.arc, stage.phi, temperature (equilibration), anything in-vacuum
 
 
 class ScanAxis(object):
@@ -241,7 +241,7 @@ def nest_axes(axes, measure):
 def _check_axis_order(axes):
     """Warn (do not raise) if a slow axis is nested inside a faster one (moved too often).
 
-    Best practice: slow / in-vacuum axes (waxs.arc, prs, temperature) outermost so they move
+    Best practice: slow / in-vacuum axes (waxs.arc, stage.phi, temperature) outermost so they move
     the fewest times.  This computes how many times each axis moves given the nesting and warns
     if a slower axis moves more often than a faster one inside it.
     """
@@ -287,7 +287,7 @@ def acquire(name, dets, axes, *, reads=None, setup=None, geometry=None, scan_nam
     dets : list
         Detectors (the q-range / which-detector choice).  Staged for the run.
     axes : list of ScanAxis
-        The scan dimensions, OUTERMOST FIRST.  Slow/in-vacuum axes (arc, prs, temperature)
+        The scan dimensions, OUTERMOST FIRST.  Slow/in-vacuum axes (arc, stage.phi, temperature)
         should come first; a guardrail warns otherwise (see ``check_order``).
     reads : list, optional
         Extra readables recorded at every event (e.g. ``[energy, waxs, xbpm2, xbpm3]``).  The
@@ -485,10 +485,10 @@ def incidence_axis(th_axis, th0, incident_angles, *, settle=0.0, record_name="in
 
 def motor_axis(name, device, values, *, settle=0.0, record=True, speed=SPEED_FAST,
                reverse_alternate=False):
-    """A generic single-motor axis (e.g. ``waxs`` arc, ``prs``, a piezo).
+    """A generic single-motor axis (e.g. ``waxs`` arc, ``stage.phi``, a piezo).
 
     If ``record`` is True, the device is added to ``reads`` so its position is in the stream
-    (``{<device.name>_<...>}``).  Set ``speed=SPEED_SLOW`` for ``waxs``/``prs`` so the
+    (``{<device.name>_<...>}``).  Set ``speed=SPEED_SLOW`` for ``waxs``/``stage.phi`` so the
     guardrail keeps them outermost.
     """
     return ScanAxis(name, values, device=device, settle=settle,

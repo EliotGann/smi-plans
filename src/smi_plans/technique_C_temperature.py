@@ -320,7 +320,7 @@ def temperature_ramp_run(name, heater, setpoints, *, t=1.0, dets=None, reads=Non
         t_token = "{" + str(getattr(heater.readback, "name", "temperature")) + "_value}"
         name_tokens = (t_token + "degC", "bpm{xbpm2_sumX}")
 
-    det_exposure_time(t, t)                                            # noqa: F821
+    yield from det_exposure_time(t, t)                                            # noqa: F821
 
     # TEMPERATURE is the (only) scan axis: SLOW, so outermost.  Built as a ScanAxis whose
     # `move` reuses the preserved :func:`goto_temperature` equilibration (index-aware soak so a
@@ -418,7 +418,7 @@ def isothermal_kinetics_run(name, heater, setpoint, *, n_frames=60, period=10.0,
         t_token = "{" + str(getattr(heater.readback, "name", "temperature")) + "_value}"
         name_tokens = (t_token + "degC", "t{kinetics_elapsed_s_value}s")
 
-    det_exposure_time(t, t)                                            # noqa: F821
+    yield from det_exposure_time(t, t)                                            # noqa: F821
 
     # The scan axis is TIME: a custom time :class:`_compose.ScanAxis` reproducing the original
     # frame pacing exactly -- spacing consecutive frame *starts* by ~`period` (accounting for

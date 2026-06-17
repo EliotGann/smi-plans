@@ -155,3 +155,76 @@ def test_N_xpcs_burst_emits_documents(sim, inject):
     N = inject("smi_plans.technique_N_xpcs")
     msgs = sim.messages(N.xpcs_burst_run("S", frame_time=0.01, n_frames=10))
     sim.assert_one_run(msgs)          # the fix: a burst still emits run documents
+
+
+# ---------------------------------------------------------------------------
+# K (tomography) + M (autonomous): the prs -> stage.phi repoint must work
+# ---------------------------------------------------------------------------
+def test_K_tomography_run_rocks_stage_phi(sim, inject):
+    """A rotation series is ONE run over stage.phi (the former prs)."""
+    K = inject("smi_plans.technique_K_tomography")
+    msgs = sim.messages(K.tomography_run("S", prs_range=(-2, 2, 5), t=0.1))
+    sim.assert_one_run(msgs)
+    assert sim.primary_events(msgs) == 5         # 5 rotation points recorded
+
+
+def test_K_tomography_records_stage_phi_field(sim, inject):
+    """Regression guard for the prs->stage.phi repoint: the scanned axis must be stage.phi,
+    so 'stage_phi' appears as a recorded data key (and 'prs' never does)."""
+    K = inject("smi_plans.technique_K_tomography")
+    res = sim.messages(K.tomography_run("S", prs_range=(-1, 1, 3), t=0.1))
+    keys = set()
+    for name, doc in res.docs:
+        if name == "event":
+            keys |= set(doc.get("data", {}).keys())
+    assert any(k.startswith("stage_phi") for k in keys), \
+        "tomography_run must record the Huber stage.phi axis (got {})".format(sorted(keys))
+    assert not any("prs" in k for k in keys), "the removed 'prs' device must not be referenced"
+
+
+def test_K_texture_pole_figure_run(sim, inject):
+    K = inject("smi_plans.technique_K_tomography")
+    msgs = sim.messages(K.texture_pole_figure_run("S", prs_range=(-2, 2, 5), ai0=0.0, ai=0.2,
+                                                  waxs_arc=(0,), t=0.1))
+    sim.assert_one_run(msgs)
+    assert sim.primary_events(msgs) == 5
+
+
+def test_I_cdsaxs_records_stage_phi(sim, inject):
+    """The CD-SAXS rock must also drive stage.phi (not the removed prs)."""
+    I = inject("smi_plans.technique_I_cdsaxs")
+    res = sim.messages(I.cdsaxs_rock_run("S", prs_range=(-1, 1, 3), t=0.1, ref_brackets=False))
+    keys = set()
+    for name, doc in res.docs:
+        if name == "event":
+            keys |= set(doc.get("data", {}).keys())
+    assert any(k.startswith("stage_phi") for k in keys), \
+        "cdsaxs_rock_run must record stage.phi (got {})".format(sorted(keys))
+
+
+# ---------------------------------------------------------------------------
+# det_exposure_time is a PLAN: it must be consumed via `yield from` (not left as
+# an unconsumed generator, which would silently never set the exposure).
+# ---------------------------------------------------------------------------
+def test_det_exposure_time_is_yielded_from(sim, inject):
+    """Guard the det_exposure_time fix: a technique that sets exposure must actually drive the
+    det_exposure_time plan.  We replace it with a plan that records when its messages are
+    consumed; a bare (un-yielded) call would never run it."""
+    B = inject("smi_plans.technique_B_grazing")
+    consumed = {"n": 0}
+
+    def _spy_det_exposure_time(a, b=None):
+        consumed["n"] += 1
+        yield from sim.bps.null()
+
+    # inject the spy into every loaded smi_plans module (mirrors how globals are injected)
+    import sys
+    for name, mod in list(sys.modules.items()):
+        if name.startswith("smi_plans") and mod is not None:
+            if hasattr(mod, "det_exposure_time"):
+                setattr(mod, "det_exposure_time", _spy_det_exposure_time)
+
+    sim.messages(B.giwaxs_run("B", th0=0.0, incident_angles=[0.1], waxs_arc=[0], t=0.1))
+    assert consumed["n"] >= 1, "det_exposure_time plan was never consumed (missing `yield from`?)"
+
+

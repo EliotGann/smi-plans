@@ -7,8 +7,8 @@ Archetype J -- X-ray reflectivity (XRR), including tender / resonant and liquid 
 Measure **specular reflectivity vs incident angle**: sweep the grazing incidence angle and
 record the specular intensity (plus I0 and transmitted flux) as one run per sweep.  Geometry
 varies -- the incidence axis may be ``piezo.th`` (solid substrate, direct beam), ``stage.th``,
-``prs``, or a bounce-down-mirror (BDM) ``bdm.th`` for liquid surfaces -- so it is passed in as
-``th_axis``.
+``stage.phi``, or a bounce-down-mirror (BDM) ``bdm.th`` for liquid surfaces -- so it is passed in
+as ``th_axis``.
 
 Gold reference: ``Commissioning/bounce_down_mirror.py`` -- READ IT; this file mirrors its
 structure exactly:
@@ -51,7 +51,7 @@ axis) on error.
 
 .. important::
     Beamline globals required at runtime (injected by the SMI profile collection; not
-    importable standalone): ``np``, ``bps``, ``bpp``, ``Signal``, ``piezo``, ``stage``, ``prs``,
+    importable standalone): ``np``, ``bps``, ``bpp``, ``Signal``, ``piezo``, ``stage``,
     ``energy``, ``pil2M``, ``pil900KW``, ``xbpm2``, ``xbpm3``, ``pin_diode``, ``pil2M_pos``,
     ``att2_1``, ``att2_2``, ``att2_3``, ``det_exposure_time``.  The bounce-down mirror ``bdm``
     (``.th`` / ``.y`` / ``.x``) and the ROI helper ``smi`` are needed only for
@@ -152,7 +152,7 @@ def xrr_point(th_axis, th_value, dets, reads, incident_angle_sig, *, settle=1.0,
     Parameters
     ----------
     th_axis : positioner
-        The incidence axis (``piezo.th`` / ``stage.th`` / ``prs`` / ``bdm.th``).
+        The incidence axis (``piezo.th`` / ``stage.th`` / ``stage.phi`` / ``bdm.th``).
     th_value : float
         Incident angle (deg) to move to (the *physical* angle; the recorded ``incident_angle``).
     atten_ladder : callable(angle) -> plan, optional
@@ -232,7 +232,7 @@ def xrr_run(name, angles, *, t=1.0, dets=None, reads=None, th_axis=None, th0=0.0
     if th_axis is None:
         th_axis = piezo.th                                         # noqa: F821
 
-    det_exposure_time(t, t)                                        # noqa: F821
+    yield from det_exposure_time(t, t)                                        # noqa: F821
     sample_name = fname(name, *name_tokens)
 
     def _measure():
@@ -294,7 +294,7 @@ def xrr_resonant_run(name, angles, *, edge_energy, energies=None, t=1.0, dets=No
     if th_axis is None:
         th_axis = piezo.th                                         # noqa: F821
 
-    det_exposure_time(t, t)                                        # noqa: F821
+    yield from det_exposure_time(t, t)                                        # noqa: F821
     sample_name = fname(name, *name_tokens)
     e_list = list(energies) if energies is not None else [edge_energy]
 
@@ -371,7 +371,7 @@ def xrr_liquid_run(name, angles, *, piezo_y_origin, bdm_th_origin, bdm_sample_di
 
     _move = move_bdm if move_bdm is not None else _default_move_bdm
 
-    det_exposure_time(t, t)                                        # noqa: F821
+    yield from det_exposure_time(t, t)                                        # noqa: F821
     sample_name = fname(name + "_liquid", *name_tokens)
 
     def _measure():

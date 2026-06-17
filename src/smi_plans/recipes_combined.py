@@ -15,7 +15,7 @@ Read these top-to-bottom as a tutorial; copy one and edit it for your beamtime.
 
 .. important::
     Beamline globals required at runtime (SMI profile collection; not importable standalone):
-    ``bps``, ``Signal``, ``np``, ``energy``, ``waxs``, ``prs``, ``piezo``, ``stage``,
+    ``bps``, ``Signal``, ``np``, ``energy``, ``waxs``, ``piezo``, ``stage``,
     ``pil2M``, ``pil900KW``, ``xbpm2``, ``xbpm3``, ``pin_diode``, ``pil2M_pos``, ``att2_9``,
     ``ls`` / ``LThermal``, ``det_exposure_time``, and an alignment routine
     (``alignement_gisaxs_hex``).
@@ -98,7 +98,7 @@ def giwaxs_tempramp_energy_5loc(
     """
     heater = heater if heater is not None else linkam_heater()
     dets = saxs_waxs_dets(use_saxs=True, use_waxs=True)
-    det_exposure_time(t, t)                                       # noqa: F821
+    yield from det_exposure_time(t, t)                                       # noqa: F821
 
     # --- apparatus / geometry setup: align, then ensure attenuators in -------------------
     def _setup():
@@ -156,7 +156,7 @@ def transmission_rh_kinetics(name, *, rh_setpoints, frames_per_rh=20, period=10.
         A Signal you update from ``readHumidity()`` to record measured RH per event.
     """
     dets = saxs_waxs_dets(use_saxs=True, use_waxs=False) + [pin_diode, xbpm2, xbpm3]  # noqa: F821
-    det_exposure_time(t, t)                                       # noqa: F821
+    yield from det_exposure_time(t, t)                                       # noqa: F821
     elapsed = Signal(name="elapsed_s", value=0.0)                # noqa: F821
 
     axes = [
@@ -181,7 +181,7 @@ def operando_echem_energy(name, *, potentials, edge_energies, set_potential, rea
     potential and the energy are recorded per event.
     """
     dets = saxs_waxs_dets(use_saxs=False, use_waxs=True) + [xbpm2, xbpm3]  # noqa: F821
-    det_exposure_time(t, t)                                       # noqa: F821
+    yield from det_exposure_time(t, t)                                       # noqa: F821
     axes = [
         potential_axis(set_potential, list(potentials), readback=readback, equilibration=5.0),
         energy_axis(list(edge_energies), settle=2.0),
@@ -210,7 +210,7 @@ def giwaxs_manual_swap_bar(*, waxs_arc=(0, 20), incident_angles=(0.1,), t=1.0, a
     """
     thickness = Signal(name="thickness_nm", value=0.0)           # noqa: F821
     dets = saxs_waxs_dets(use_saxs=True, use_waxs=True)
-    det_exposure_time(t, t)                                       # noqa: F821
+    yield from det_exposure_time(t, t)                                       # noqa: F821
     counter = {"n": 0}
 
     def _measure_one():
@@ -259,9 +259,12 @@ def build_axes_from_spec(spec, *, context):
     context : dict
         Live handles, e.g.::
 
-            {"energy": energy, "th_axis": piezo.th, "th0": 0.0, "waxs": waxs, "prs": prs,
+            {"energy": energy, "th_axis": piezo.th, "th0": 0.0, "waxs": waxs, "phi": stage.phi,
              "heater": linkam_heater(), "set_potential": my_set_v, "set_rh": my_set_rh,
              "piezo_x": piezo.x, "piezo_y": piezo.y}
+
+        (The Huber rotation axis ``stage.phi`` is the former ``prs``; reference it as a
+        ``{"type": "motor", "device": "phi", ...}`` axis spec.)
 
     Returns
     -------

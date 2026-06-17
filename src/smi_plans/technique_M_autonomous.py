@@ -56,7 +56,7 @@ benchmark a controller **without beam time**, then run it unchanged on the real 
 
 .. important::
     Beamline globals required at runtime (injected by the SMI profile collection; not
-    importable standalone): ``np``, ``bps``, ``Signal``, ``piezo``, ``prs``, ``waxs``,
+    importable standalone): ``np``, ``bps``, ``Signal``, ``piezo``, ``stage``, ``waxs``,
     ``energy``, ``pil2M``, ``pil900KW``, ``xbpm2``, ``xbpm3``, ``pil2M_pos``,
     ``det_exposure_time``, and the live ``RE`` (RunEngine) + ``db`` (databroker / Tiled).
     Unlike the pure plan files, the *orchestration functions* here legitimately take ``re`` and
@@ -166,7 +166,7 @@ def measure_for_agent(params, *, dets=None, reads=None, apply_params=None, t=1.0
     # Record the whole suggestion (and that this was agent-driven) as intent metadata too.
     run_md = merge_md({"agent_params": dict(params), "driver": "autonomous"}, md)
 
-    det_exposure_time(t, t)                                    # noqa: F821
+    yield from det_exposure_time(t, t)                                    # noqa: F821
     sample_name = fname(name_base, *name_tokens)
 
     def _measure():
@@ -543,11 +543,11 @@ def example_alignment():
     """
     step = 200  # microns
 
-    # One small raster per iteration: prs outermost (slow), then x, z (the at_beamline shape).
+    # One small raster per iteration: stage.phi outermost (slow), then x, z (the at_beamline shape).
     def _scan():
         return bp.rel_grid_scan(                                # noqa: F821
-            [OAV_writing, piezo, prs],                         # noqa: F821
-            prs, -60, 60, 5,                                   # noqa: F821 (slow axis outermost)
+            [OAV_writing, piezo, stage.phi],                   # noqa: F821
+            stage.phi, -60, 60, 5,                             # noqa: F821 (slow axis outermost)
             piezo.x, -step, step, 3,                           # noqa: F821
             piezo.z, -step, step, 3,                           # noqa: F821
             snake_axes=True)

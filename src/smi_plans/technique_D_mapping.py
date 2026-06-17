@@ -159,7 +159,7 @@ def map_line_run(name, motor, start, stop, num, *, t=0.5, dets=None, geometry="t
     if baseline is None:
         baseline = _map_baseline()
 
-    det_exposure_time(t, t)                                           # noqa: F821
+    yield from det_exposure_time(t, t)                                           # noqa: F821
     run_md = _map_md(name, "map_line", geometry, md, pos_tokens=(pos_token,))
 
     scan = bp.rel_scan if relative else bp.scan
@@ -205,7 +205,7 @@ def map_grid_run(name, m1, m1_start, m1_stop, m1_num, m2, m2_start, m2_stop, m2_
     if baseline is None:
         baseline = _map_baseline()
 
-    det_exposure_time(t, t)                                           # noqa: F821
+    yield from det_exposure_time(t, t)                                           # noqa: F821
     run_md = _map_md(name, "map_grid", geometry, md, pos_tokens=pos_tokens)
 
     grid = bp.rel_grid_scan if relative else bp.grid_scan
@@ -244,7 +244,7 @@ def map_spiral_run(name, x_motor, y_motor, x_range, y_range, dr, nth, *, t=0.5, 
     if baseline is None:
         baseline = _map_baseline()
 
-    det_exposure_time(t, t)                                           # noqa: F821
+    yield from det_exposure_time(t, t)                                           # noqa: F821
     run_md = _map_md(name, "map_spiral", geometry, md, pos_tokens=pos_tokens)
 
     spiral = bp.rel_spiral if relative else bp.spiral
@@ -309,7 +309,7 @@ def map_grid_manual_run(name, m1, m1_positions, m2, m2_positions, *, t=0.5, dets
     if baseline is None:
         baseline = _map_baseline()
 
-    det_exposure_time(t, t)                                           # noqa: F821
+    yield from det_exposure_time(t, t)                                           # noqa: F821
 
     # The spatial raster as compose axes: m1 (outer/slow) -> m2 (inner/fast, snaked).  These
     # record the scanned motor positions in the stream (auto-merged into every event), so the

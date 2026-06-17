@@ -112,7 +112,7 @@ def giwaxs_run(name, *, th0, incident_angles, waxs_arc=(0,), t=1.0, dets=None, r
             baseline = []
 
     dets = dets or _arc_dets()
-    det_exposure_time(t, t)                                    # noqa: F821
+    yield from det_exposure_time(t, t)                                    # noqa: F821
 
     # The axis stack (outermost first): waxs.arc (slow) -> incident angle.  The incidence axis
     # records the *relative* angle on an `incident_angle` Signal (-> {incident_angle} token);
@@ -211,7 +211,7 @@ def giwaxs_bar_arc_economy(samples, *, align, align_angle=0.1, waxs_arc=(0, 20),
             yield from bps.trigger_and_read(list(dets) + reads + [incident_angle])
         yield from bps.mv(th_axis, th0)
 
-    det_exposure_time(t, t)                                    # noqa: F821
+    yield from det_exposure_time(t, t)                                    # noqa: F821
 
     # ensure attenuators in for the whole interleaved block
     def _go():

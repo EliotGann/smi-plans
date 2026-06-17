@@ -9,7 +9,7 @@ architecture (see ``templates/_analysis/BEST_PRACTICES_DRAFT.md``):
   ``@stage_decorator`` envelope around an inner measurement plan, with merged ``md={}`` and
   a filename templated from *recorded* fields.
 * **Multiple runs open at once** (:func:`multi_sample_run`) -- the run-key interleave that
-  lets a slow / in-vacuum axis (``waxs.arc``, ``prs``) move once while every sample's run is
+  lets a slow / in-vacuum axis (``waxs.arc``, ``stage.phi``) move once while every sample's run is
   open simultaneously.  (Generalized from the "Tom" prototype in ``30-user-Gann.py``.)
 * **Sample positioning** (:func:`goto_sample`) -- expand a :class:`_samples.Sample` into the
   right ``bps.mv`` calls for piezo and/or hexapod.
@@ -22,7 +22,7 @@ architecture (see ``templates/_analysis/BEST_PRACTICES_DRAFT.md``):
 .. important::
     References beamline globals injected by the SMI profile collection at runtime and **not
     importable standalone**: ``bps``, ``bpp``, ``Signal``, ``np``, and the device objects
-    ``piezo``, ``stage``, ``waxs``, ``prs``, ``energy``, ``pil2M``, ``pil900KW``, ``pil2M_pos``,
+    ``piezo``, ``stage``, ``waxs``, ``energy``, ``pil2M``, ``pil900KW``, ``pil2M_pos``,
     ``xbpm2``, ``xbpm3``, ``det_exposure_time`` ...  Import / run only inside the live beamline
     IPython environment.
 
@@ -255,7 +255,7 @@ def multi_sample_run(samples, slow_axis, slow_positions, point, *,
     """Open one run per sample, sweep a slow axis ONCE, and record every sample at each step.
 
     This is the sanctioned form of "multiple open runs at once": it minimizes travel of a
-    slow / in-vacuum axis (``waxs.arc``, ``prs``) by moving it in the *outer* loop while N
+    slow / in-vacuum axis (``waxs.arc``, ``stage.phi``) by moving it in the *outer* loop while N
     per-sample runs are simultaneously open, writing each sample's frame into its own run via
     run keys.  Generalized + cleaned up from the ``30-user-Gann.py`` "Tom" prototype, with a
     ``finalize_wrapper`` so all runs close even on error.
@@ -265,7 +265,7 @@ def multi_sample_run(samples, slow_axis, slow_positions, point, *,
     samples : _samples.SampleList (or list of Sample)
         One run is opened per sample, keyed ``"run {i}"``.
     slow_axis : ophyd positioner
-        The expensive axis to move once per outer step (e.g. ``waxs``, ``prs``).
+        The expensive axis to move once per outer step (e.g. ``waxs``, ``stage.phi``).
     slow_positions : sequence
         Outer-loop setpoints for ``slow_axis`` (consider ordering / ``[::-1]`` to avoid
         backtracking).
@@ -282,7 +282,7 @@ def multi_sample_run(samples, slow_axis, slow_positions, point, *,
         Plan to coarse-position a sample (default: :func:`goto_sample`).  Called once per
         (slow-step, sample) so the fast stage is at the right sample before the point plan.
     settle : float
-        Sleep after each ``slow_axis`` move (let the arc/prs settle).
+        Sleep after each ``slow_axis`` move (let the arc/phi settle).
 
     Notes
     -----

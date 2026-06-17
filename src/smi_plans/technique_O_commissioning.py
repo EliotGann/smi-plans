@@ -136,7 +136,7 @@ def agbh_calibration_run(*, name="AgBH", t=1.0, dets=None, reads=None, sdd_posit
         except Exception:
             pass
 
-    det_exposure_time(t, t)                                     # noqa: F821
+    yield from det_exposure_time(t, t)                                     # noqa: F821
     sample_name = fname(name, *name_tokens)
 
     def _measure():
@@ -223,7 +223,7 @@ def attenuator_ladder_run(attenuators, *, name="atten_ladder", t=2.0, dets=None,
     base = list(baseline) if baseline else []
     base = base + [energy]                                      # noqa: F821
 
-    det_exposure_time(t, t)                                     # noqa: F821
+    yield from det_exposure_time(t, t)                                     # noqa: F821
     sample_name = fname(name, *name_tokens)
 
     def _measure():
@@ -321,7 +321,7 @@ def direct_beam_scan_run(*, name="direct_beam", t=0.3, dets=None, reads=None, mo
     except Exception:
         pass
 
-    det_exposure_time(t, t)                                     # noqa: F821
+    yield from det_exposure_time(t, t)                                     # noqa: F821
     sample_name = fname(name, *name_tokens)
 
     def _measure():

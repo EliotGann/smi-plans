@@ -128,7 +128,7 @@ def nexafs_run(name, energies, *, t=2.0, dets=None, reads=None, geometry="transm
         except Exception:
             baseline = []
 
-    det_exposure_time(t, t)                                     # noqa: F821
+    yield from det_exposure_time(t, t)                                     # noqa: F821
 
     # energy_direction Signal distinguishes up vs down frames within the single run.
     energy_direction = Signal(name="energy_direction", value="up")  # noqa: F821

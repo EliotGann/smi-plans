@@ -40,11 +40,37 @@ from collections import Counter
 # Simulated device classes (mirror the real SMI device API surface used by smi_plans)
 # ---------------------------------------------------------------------------
 class _Stack(Device):
-    """SmarAct piezo OR hexapod stage: .x/.y/.z/.th."""
+    """SmarAct piezo fine stage: .x/.y/.z/.th."""
     x = Cpt(SynAxis, name="x")
     y = Cpt(SynAxis, name="y")
     z = Cpt(SynAxis, name="z")
     th = Cpt(SynAxis, name="th")
+
+
+class _HuberStage(Device):
+    """The Huber coarse ``stage`` (STG_pseudo) as exposed on the live beamline:
+    lab-frame ``x/y/z`` + rotations ``theta/chi/phi``, with the back-compat property aliases
+    ``.th``/``.ph``/``.ch`` the real ``STG_pseudo`` provides (so ``bps.mv(stage.th, …)`` and
+    ``stage.phi`` both work).  ``phi`` is the rotation axis the old ``prs`` was repointed to.
+    """
+    x = Cpt(SynAxis, name="x")
+    y = Cpt(SynAxis, name="y")
+    z = Cpt(SynAxis, name="z")
+    theta = Cpt(SynAxis, name="theta")
+    chi = Cpt(SynAxis, name="chi")
+    phi = Cpt(SynAxis, name="phi")
+
+    @property
+    def th(self):
+        return self.theta
+
+    @property
+    def ph(self):
+        return self.phi
+
+    @property
+    def ch(self):
+        return self.chi
 
 
 class _WaxsArc(Device):
@@ -148,9 +174,11 @@ class SimBeamline:
         self.Signal = Signal
 
         self.piezo = _Stack(name="piezo")
-        self.stage = _Stack(name="stage")
+        self.stage = _HuberStage(name="stage")
         self.waxs = _Waxs(name="waxs")
-        self.prs = SynAxis(name="prs")
+        # NOTE: the legacy ``prs`` (precision rotation stage) was removed on the live beamline
+        # and replaced by the Huber ``stage.phi`` axis.  The sim intentionally does NOT define a
+        # ``prs`` global, so any plan still referencing it fails loudly (it should use stage.phi).
         self.energy = SynAxis(name="energy")
         self.xbpm2 = _XBPM(name="xbpm2")
         self.xbpm3 = _XBPM(name="xbpm3")
@@ -204,7 +232,7 @@ class SimBeamline:
         return {
             "np": self.np, "bps": self.bps, "bpp": self.bpp, "bp": self.bp,
             "Signal": self.Signal,
-            "piezo": self.piezo, "stage": self.stage, "waxs": self.waxs, "prs": self.prs,
+            "piezo": self.piezo, "stage": self.stage, "waxs": self.waxs,
             "energy": self.energy, "xbpm2": self.xbpm2, "xbpm3": self.xbpm3,
             "pin_diode": self.pin_diode, "pil2M": self.pil2M, "pil900KW": self.pil900KW,
             "amptek": self.amptek, "rayonix": self.rayonix, "pil2M_pos": self.pil2M_pos,

@@ -114,7 +114,7 @@ def configure_burst(det, frame_time, n_frames, *, period=None):
     is also recorded in the baseline by :func:`xpcs_burst_run` so the burst length is provenance.
     """
     per = period if period is not None else frame_time
-    det_exposure_time(frame_time, per)                          # noqa: F821
+    yield from det_exposure_time(frame_time, per)               # noqa: F821
     yield from bps.mv(det.cam.num_images, int(n_frames))
 
 

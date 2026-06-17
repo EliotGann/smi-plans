@@ -179,7 +179,7 @@ def transmission_run(name, *, t=1.0, dets=None, reads=None, geometry="transmissi
         except Exception:
             baseline = []
 
-    det_exposure_time(t, t)                                           # noqa: F821
+    yield from det_exposure_time(t, t)                                           # noqa: F821
 
     # Record the dither origin so absolute spot positions reconstruct from origin + piezo read.
     x0 = slow_axis.position

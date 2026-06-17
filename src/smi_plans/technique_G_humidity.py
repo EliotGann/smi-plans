@@ -263,7 +263,7 @@ def rh_step_series_run(name, rh_setpoints, *, measure_at_rh=1, t=1.0, dets=None,
         pass
     base = base + [rh_setpoint]                                 # setpoint travels in baseline
 
-    det_exposure_time(t, t)                                      # noqa: F821
+    yield from det_exposure_time(t, t)                                      # noqa: F821
 
     # RH is the (outer, SLOW) scan axis: its `move` reuses this file's own :func:`set_rh` MFC
     # ramp + equilibration and records the *commanded* setpoint (the `rh_setpoint` Signal, also
@@ -377,7 +377,7 @@ def rh_swelling_kinetics_run(name, target_rh, *, n_frames=None, duration=None, p
         pass
     base = base + [rh_setpoint]
 
-    det_exposure_time(t, t)                                      # noqa: F821
+    yield from det_exposure_time(t, t)                                      # noqa: F821
     sample_name = fname(name, *name_tokens)
 
     # Equilibrate (or, for ramp_during, just start the flows without waiting) ONCE before the
