@@ -600,8 +600,13 @@ def time_axis(n_frames, *, period=0.0, record_name="frame", elapsed_signal=None)
 # pause/resume and the document model still work.
 
 def _coerce(value, cast):
+    # ``cast=None`` means "use the default coercion" (float).  We deliberately default the
+    # public ``cast`` parameters to ``None`` rather than ``float`` so the plans stay
+    # introspectable by bluesky-queueserver, which rejects a parameter whose default is a bare
+    # type object (it cannot ``ast.literal_eval`` ``<class 'float'>``).  Passing an explicit
+    # ``str``/``int``/``float`` still works for in-session/GUI callers.
     if cast is None:
-        return value
+        cast = float
     try:
         return cast(value)
     except Exception:
@@ -617,7 +622,7 @@ def pause_for_user(prompt="Press <enter> to continue"):
     yield from bps.input_plan(prompt + ": ")
 
 
-def manual_value(prompt, signal, *, cast=float, echo=True):
+def manual_value(prompt, signal, *, cast=None, echo=True):
     """Plan: prompt the user for a value and set it onto a recordable ``signal`` (via a message).
 
     The value the user types is set on ``signal`` (e.g. ``Signal(name="thickness_nm")``) with
@@ -633,8 +638,10 @@ def manual_value(prompt, signal, *, cast=float, echo=True):
         Recordable destination for the entered value (named whatever you want; the value need
         not be a string).
     cast : callable or None
-        Coerce the typed string (default ``float``).  Pass ``str`` to keep text, ``int``, etc.
-        If coercion fails, the raw string is stored.
+        Coerce the typed string (``None`` -> ``float``, the default).  Pass ``str`` to keep
+        text, ``int``, etc.  If coercion fails, the raw string is stored.  (Defaults to ``None``
+        rather than ``float`` so the plan stays introspectable by bluesky-queueserver, which
+        rejects a bare-type default.)
     echo : bool
         Print the captured value.
     """
@@ -687,7 +694,7 @@ def manual_step(prompt, *, signals=None, casts=None, confirm=True):
     return out
 
 
-def manual_axis(name, prompt, values=None, *, signal=None, cast=float,
+def manual_axis(name, prompt, values=None, *, signal=None, cast=None,
                 action_each=None, speed=SPEED_SLOW, record_name=None):
     """A scan axis driven by the USER at each point (manual swaps / hand-set conditions).
 
@@ -714,8 +721,8 @@ def manual_axis(name, prompt, values=None, *, signal=None, cast=float,
     signal : ophyd Signal, optional
         Where to record a value the user types at each point.  If None and ``values`` given,
         an auto Signal records the enumerated value.
-    cast : callable
-        Coercion for the typed value (default ``float``).
+    cast : callable or None
+        Coercion for the typed value (``None`` -> ``float``, the default).
     action_each : callable(value) -> plan, optional
         Extra plan run after the prompt (e.g. trigger something, or move a motor the user's
         value implies).
@@ -763,7 +770,7 @@ def manual_axis(name, prompt, values=None, *, signal=None, cast=float,
         "yields the inner plan repeatedly until the user stops.")
 
 
-def manual_loop(prompt, inner, *, signal=None, cast=float, stop_words=("", "stop", "q")):
+def manual_loop(prompt, inner, *, signal=None, cast=None, stop_words=("", "stop", "q")):
     """Repeat ``inner()`` once per user-driven iteration until the user stops (open-ended).
 
     The composable counterpart to an open-ended manual axis (unknown count).  Each iteration:
@@ -783,8 +790,8 @@ def manual_loop(prompt, inner, *, signal=None, cast=float, stop_words=("", "stop
         or a whole :func:`acquire` body).
     signal : ophyd Signal, optional
         Capture a per-iteration typed value (recorded if read/baselined).
-    cast : callable
-        Coercion for the typed value.
+    cast : callable or None
+        Coercion for the typed value (``None`` -> ``float``, the default).
     stop_words : tuple of str
         Entering any of these (at the continue prompt) ends the loop.
     """

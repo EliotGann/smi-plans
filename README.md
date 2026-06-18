@@ -57,6 +57,16 @@ RE(acquire("PS40nm", [pil2M, pil900KW, xbpm2, xbpm3], axes,
 
 For the common single-concern cases, the `technique_*` presets pre-assemble the standard thing.
 
+## Queueserver
+
+To run these plans from the SMI `bluesky-queueserver` (queue-monitor GUI), the profile collection
+imports the curated surface `smi_plans._qserver` into its startup namespace (one line) and
+regenerates `existing_plans_and_devices.yaml`. That module re-exports every `technique_*`
+`*_run`/`*_bar` preset plus data-only `*_from_spec` wrapper plans (e.g. `acquire_from_spec`,
+`nexafs_from_spec`, `temperature_ramp_from_spec`) that take a single JSON `spec` and resolve device
+*names* → live objects inside the worker. See **`docs/QSERVER_WIRING.md`** for the exact
+profile-collection wiring steps.
+
 ## Layout
 
 ```
@@ -69,6 +79,7 @@ smi-plans/
 │   ├── _core.py            run-shaping primitives (one_sample_run, multi_sample_run, …)
 │   ├── _compose.py         ★ the composition layer: ScanAxis + axis builders + acquire()
 │   ├── recipes_combined.py ★ worked cross-concern examples + spec→axes bridge
+│   ├── _qserver.py         ★ curated bluesky-queueserver surface (presets + *_from_spec wrappers)
 │   └── technique_<A–O>_*.py PRESET RECIPES, one per concern-bundle
 ├── docs/
 │   ├── PACKAGE_OVERVIEW.md  the full package reference (was the package README)
