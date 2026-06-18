@@ -231,10 +231,21 @@ When all Critical items land, `smi_plans._devices.py` can be reduced to (ideally
 
 ## 7. Queueserver (QS) enablement — where it fits
 
+> **⚠️ PRODUCTION QS DEFERRED (decision, 2026-06).** Production queueserver use at SMI is **on hold
+> pending a facility-level solution** to **proposal/project metadata**: `proposal_id` sets `RE.md`
+> in the IPython process, and a QS worker is a *separate* process that would not inherit it, so
+> queue-submitted runs would carry the wrong/empty `data_session`/proposal/project. The beamline
+> decided this needs a facility/NSLS-II-wide shared-proposal mechanism, not a local wrapper. The
+> technical groundwork in this section (and the `smi-plans` `_qserver` surface) stays valid and is
+> the ready recipe; only the *production rollout* waits. Full detail + the options considered:
+> `docs/QSERVER_WIRING.md` → "Deferred: proposal/project metadata". Continue using `pixi run -e qs
+> qs-list` as a non-production worker-load smoke test.
+
 **Short answer to "is QS after the cleanup?": yes, mostly — the cleanup *is* what unblocks QS —
 but QS readiness is a distinct milestone with four extra, QS-specific steps that are NOT part of
 the package cleanup.** The decisive cleanup phase for QS is **Phase 4** (the instances factory
-that removes the `get_ipython()` grabs).
+that removes the `get_ipython()` grabs). *(See the deferral note above: even once these steps are
+done, production rollout waits on the facility proposal/project-metadata solution.)*
 
 ### 7.1 How QS actually loads this profile (the governing fact)
 `pixi run qs.qs-backend` runs `start-re-manager --profile-dir=.`, which (with the default
@@ -267,26 +278,39 @@ the **call site** passing `get_ipython().user_ns` crashes first when `get_ipytho
 | import-time `RE.install_suspender` / blocking EPICS `.get()`/`.wait()` | move out of import; guard | Phase 3 / 4 |
 | interactive `input()` mid-plan, `plt.show()` | covered by the Tenet-5/6 cleanup + worker guards | Phase 2 / 3 |
 
-### 7.3 The four QS-specific steps (NOT part of the cleanup)
+### 7.3 The QS-specific steps (NOT part of the cleanup)
 These must be planned in addition to Phases 0–4:
 
 1. **`existing_plans_and_devices.yaml`** — the cached plan/device list. Generate with
    `qserver-list-plans-devices --startup-dir . --file-dir .`. (QS will *start* without it and
    auto-populate on first env-open, but generating it explicitly catches problems early.)
+   *Status: the `smi-plans` curated surface (`smi_plans._qserver`) is wired and proven — strict
+   `qserver-list-plans-devices --ignore-invalid-plans=OFF` lists 87 plans with 0 rejections; see
+   `docs/QSERVER_WIRING.md`.*
 2. **`user_group_permissions.yaml`** — allow/deny lists; **must include a `root` group**. Not
    auto-generated; author from a template. Without it QS starts but **clients cannot submit
-   plans** ("USERS WILL NOT BE ABLE TO SUBMIT PLANS").
+   plans** ("USERS WILL NOT BE ABLE TO SUBMIT PLANS"). *Status: exists in the profile
+   (`startup/user_group_permissions.yaml`), `root` group allows all.*
 3. **Plan-signature validation** — QS rejects (by default, *fails env-open on*) plans whose
    parameter **defaults aren't reconstructable** (e.g. a default that is a device object or a
    lambda) or whose **type annotations** can't be rebuilt. Action: run
    `qserver-list-plans-devices` against the profile, then either annotate offending plans with
    `parameter_annotation_decorator` / fix the signatures, or run with `--ignore-invalid-plans ON`
    initially. **Most of the user-facing plans are in `smi-plans`** (already signature-clean and
-   message-pure with a test enforcing it), so the risk concentrates in the *profile's own* plans
-   (`alignment`, beam-mode, exposure) — another reason Phase 3 (logic move + cleanup) precedes QS.
+   message-pure with a test enforcing it; the two `cast=float` defaults were fixed for QS), so the
+   risk concentrates in the *profile's own* plans (`alignment`, beam-mode, exposure) — another
+   reason Phase 3 (logic move + cleanup) precedes QS.
 4. **Deployment infra** — a **Redis** server for the queue/permissions store (separate from the
    metadata Redis), plus the systemd units / ansible roles the `pixi.toml` `[feature.qs.tasks]`
    comment already flags as "needs development work."
+5. **Proposal/project metadata (THE PRODUCTION BLOCKER — needs a facility solution).** `proposal_id`
+   sets proposal/project/`data_session` into the **terminal process's `RE.md`**; the QS worker is a
+   separate process with its own `RE.md` and never runs `proposal_id`, so queue-submitted runs would
+   carry the wrong/empty proposal in their start docs (a data-provenance failure). This is **not** a
+   per-beamline wrapper to write — the authoritative proposal/data-session is a facility concern
+   (PASS/data-security/Tiled data-session). **Production QS is deferred until NSLS-II provides a
+   shared-proposal source the worker can read.** Full analysis + the options considered (and why a
+   local hack was rejected) are in `docs/QSERVER_WIRING.md` → "Deferred: proposal/project metadata".
 
 ### 7.4 Sequencing recommendation
 - **Recommended path (clean):** QS comes up after **Phases 0–4** + the four steps above. Phase 4

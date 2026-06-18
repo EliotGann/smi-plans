@@ -10,11 +10,22 @@ a queueserver, or any backend. It outputs text that references the `smi_plans` p
 The architecture is deliberately staged so a backend (direct-RE execution, or
 `bluesky-queueserver`) can be added **later without rewriting** the GUI or the experiment model.
 
+> **Two important status notes (2026-06), detailed in the "Future: queueserver" section:**
+> (1) The package now ships the qserver target this skill predicted — `smi_plans._qserver` with
+> data-only `acquire_from_spec(spec)` / `*_from_spec` wrapper plans whose `spec` is the same
+> `ExperimentSpec` shape described here. Build the spec to validate against `acquire_from_spec`.
+> (2) **Production queueserver at SMI is deferred** pending a facility-level proposal/project
+> metadata solution, so the **copy-paste code generator is the primary shipping path** — do not
+> gate GUI work on a live queue, and do **not** put proposal/project on samples or invent a local
+> proposal source.
+
 ## When to use this
 
 - Building, extending, or reviewing the SMI experiment-builder GUI.
-- Designing the serializable "experiment spec" that the GUI edits and the code generator emits.
-- Deciding how to keep the GUI decoupled from execution so qserver can be slotted in later.
+- Designing the serializable "experiment spec" that the GUI edits and the code generator emits
+  (and that maps 1:1 onto `smi_plans._qserver.acquire_from_spec`'s `spec`).
+- Deciding how to keep the GUI decoupled from execution so qserver can be slotted in later (the
+  wrapper plans now exist; production deployment is deferred — see "Future: queueserver").
 
 ## Scope (read this first)
 
@@ -30,7 +41,9 @@ IN SCOPE NOW:
 
 EXPLICITLY OUT OF SCOPE NOW (but the design must not preclude it):
 - Any live connection to the RunEngine, the data broker/Tiled, EPICS, or a queueserver.
-- Submitting/queuing/running plans. The output is text only.
+- Submitting/queuing/running plans. The output is text only. (Production qserver at SMI is
+  *deferred* anyway — see "Future: queueserver" — so the copy-paste generator is the shipping path;
+  the qserver `*_from_spec` target already exists in the package for when it is greenlit.)
 - Live device readback, motor moves, plots of real data.
 
 ## The core principle: spec in the middle
@@ -42,14 +55,17 @@ it only manipulates the spec and asks a generator to render it.
 
 ```
    ┌────────┐   edits    ┌──────────────┐   render    ┌─────────────────────┐
-   │  GUI   │ ─────────► │ ExperimentSpec│ ──────────► │ code generator      │ → script text (copy-paste)
+   │  GUI   │ ─────────► │ ExperimentSpec│ ──────────► │ code generator      │ → script text (copy-paste)  [SHIPS NOW]
    └────────┘            │  (JSON/dict)  │ ──────────► │ dry-run validator   │ → "1 run, N events / errors"
-                         └──────────────┘  ──────────► │ (LATER) qserver sub │ → submit to queue
-                                              future
+                         └──────────────┘  ──────────► │ qserver sub via     │ → item: acquire_from_spec(spec)
+                                            deferred    │ _qserver wrappers   │   [target EXISTS; deploy DEFERRED]
+                                                        └─────────────────────┘
 ```
 
 Because the spec is the contract, swapping "render to text" for "submit to qserver" later is an
-additive change — a new consumer of the same spec.
+additive change — a new consumer of the same spec. The qserver consumer's target already exists
+(`smi_plans._qserver.acquire_from_spec` and the `*_from_spec` wrappers take this exact spec); only
+the *production deployment* is deferred (facility proposal/metadata solution — see below).
 
 ## The ExperimentSpec (the data model to build)
 
@@ -309,41 +325,73 @@ Tiled via each `ScanRecord.run_uid` if needed. The viewer **reads**; it does not
 - **Offline / tests only:** `SampleStore({})` (in-memory) or a JSON-file backend — for developing
   the GUI with **no Redis**. This is a dev convenience, **not** a way to see live samples.
 
-## Future: queueserver (design for it now, don't build it)
+## Future: queueserver (the spec wrappers now EXIST; production is deferred)
 
-qserver is NOT in use at SMI today. Keep the door open by obeying these constraints:
+**Status update (2026-06).** Two things changed since this skill was first written:
 
-- **The spec must be enough to produce a qserver item later.** A `bluesky-queueserver` plan item
-  is `{"name": <plan_name>, "args": [...], "kwargs": {...}}` referencing a plan registered in the
-  server's allowed-plans namespace. So: keep device references as **names/strings** (qserver
-  serializes args; it cannot take live device objects), and keep the spec free of Python
-  objects. The current `acquire(...)` signature takes live devices, so a qserver path will need a
-  thin **string-arg wrapper plan** (e.g. `acquire_from_spec(spec_dict)`) that the server exposes
-  and that resolves names → devices inside the worker. Note this as the future seam; the spec is
-  already shaped for it.
-- **Add an executor abstraction with one method**, even though only the codegen path exists now:
+1. **The qserver plan surface now exists in the package.** `smi_plans._qserver` is a curated
+   bluesky-queueserver surface: it re-exports the A–O presets AND ships **data-only
+   `*_from_spec` wrapper plans** — `acquire_from_spec(spec)`, `nexafs_from_spec(spec)`,
+   `giwaxs_from_spec(spec)`, `temperature_ramp_from_spec(spec)` — that take a **single
+   JSON-serializable `spec` dict** and resolve device *names → live objects inside the worker*
+   (reusing `recipes_combined.build_axes_from_spec`). This is **exactly the "string-arg wrapper
+   plan" seam this skill predicted**, and it is the concrete target for a `QueueServerExecutor`.
+   The `acquire_from_spec` spec schema is the same `ExperimentSpec` shape described in this skill
+   (names not objects, axes outermost-first, `context` of names). See
+   `docs/QSERVER_WIRING.md` and `tests/test_qserver.py`.
+
+2. **Production queueserver at SMI is DEFERRED pending a facility-level solution.** Do **not** build
+   the GUI assuming a live SMI queue is imminent. The blocker is **proposal/project metadata**:
+   `proposal_id` sets `RE.md` in the terminal *process*, and a qserver worker is a *separate*
+   process that would not inherit it, so queued runs would carry the wrong/empty
+   `data_session`/proposal/project. The beamline decided this needs a facility/NSLS-II-wide
+   shared-proposal mechanism, not a per-beamline hack (full analysis:
+   `docs/QSERVER_WIRING.md` → "Deferred: proposal/project metadata"; restructure plan
+   `docs/STARTUP_RESTRUCTURE_PLAN.md` §7.3 item 5).
+
+**What this means for the GUI (unchanged direction, sharper target):**
+
+- **Keep building the copy-paste code generator as the primary, shipping path.** It is unaffected
+  by the QS deferral and is what users will actually use at the beamline now.
+- **Keep the spec pure data and qserver-shaped** (the wrappers above prove the shape is right) so a
+  `QueueServerExecutor` is a drop-in later. The mapping is now concrete, not hypothetical:
+
   ```python
   class Executor:
-      def submit(self, spec): ...        # returns something to show the user
-  class CopyPasteExecutor(Executor):     # NOW
-      def submit(self, spec): return render(spec)          # -> script text
-  # class QueueServerExecutor(Executor): # LATER
-  #     def submit(self, spec): RM.item_add(spec_to_qserver_item(spec))
-  # class DirectREExecutor(Executor):    # optional
-  #     def submit(self, spec): RE(build_plan_from_spec(spec))
+      def submit(self, spec): ...                 # returns something to show the user
+  class CopyPasteExecutor(Executor):              # NOW (ships)
+      def submit(self, spec): return render(spec)            # -> script text
+  # class QueueServerExecutor(Executor):          # LATER (target exists, deployment deferred)
+  #     def submit(self, spec):
+  #         # the package already exposes acquire_from_spec / *_from_spec that take this spec
+  #         RM.item_add({"name": "acquire_from_spec", "args": [spec], "kwargs": {}})
   ```
-  The GUI calls `executor.submit(spec)`; today it's wired to `CopyPasteExecutor`. Adding qserver
-  is a new class, not a GUI change.
+
+  i.e. a GUI `ExperimentSpec` becomes a qserver item by wrapping it as the single `spec` arg of
+  `acquire_from_spec` (or the technique-specific `*_from_spec`). **No spec rework is needed** —
+  validate against `acquire_from_spec`'s schema as you build the model.
+- **Do NOT put proposal/project on the sample or bake a local proposal source into the GUI.** Until
+  the facility mechanism exists, the GUI's "project / proposal" fields feed the *generated script's*
+  `md`/`project_name` (copy-paste path), exactly as today. When a live queue arrives, the worker
+  (not the GUI, not the sample bookmark) will seed proposal/`data_session` from the facility source;
+  the GUI just keeps carrying `project_name`/intent in `md`. Treat proposal as a **session/queue**
+  fact, never a sample fact.
 - Prior art for a homegrown control channel at SMI is
   `CDSAXS/DummyBluSky/user_scripts/bluesky_server.py` (a ZMQ REP/PUB server with a
-  motor/detector registry and main-thread RE dispatch). If a backend is added before qserver,
-  this is the pattern to extend — but it's still a separate executor behind the same spec.
+  motor/detector registry and main-thread RE dispatch). If a backend is added before the facility
+  QS solution, this is the pattern to extend — but it's still a separate executor behind the same
+  spec, and it inherits the same proposal/metadata caveat.
 
 ## GUI feature checklist (what the front-end must cover)
 
 Organize the UI by the five concerns:
 
-1. **Project / metadata:** project_name, scan_name, geometry, free-form md, exposure time.
+1. **Project / metadata:** project_name, scan_name, geometry, free-form md, exposure time. These
+   flow into the generated script's `md`/`project_name` (and the `spec`'s `md`/`project_name`).
+   **Proposal/`data_session` is intentionally NOT a GUI field** — it is set by the beamline session
+   (`proposal_id`) today, and by a facility shared-proposal source on the worker once production QS
+   lands; the GUI only carries user *intent* (`project_name`, free-form `md`), never the
+   authoritative proposal/data-session. (See "Future: queueserver".)
 2. **Beam / q:** detector multi-select (with the arc-aware SAXS/WAXS toggle), the per-event
    `reads` set (sensible default `[energy, waxs, xbpm2, xbpm3]`).
 3. **Apparatus / geometry:** alignment routine + angle; attenuators-in selection; heater

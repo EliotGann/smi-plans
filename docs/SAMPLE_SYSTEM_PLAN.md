@@ -13,6 +13,16 @@
 > the full list of scans run on each sample (with motor positions, scan type, energy,
 > attenuation, exposure, and a result), and the run uids that tie into analysis. The sample
 > *carries its own history*.
+>
+> **Note on proposal/project + queueserver (2026-06):** this doc's "future qserver worker"
+> references still hold for the *shared-state bus* (db=2 is process-shared, so a worker and the
+> terminal see the same samples). But **production queueserver at SMI is deferred** pending a
+> facility-level **proposal/project metadata** solution (see `docs/QSERVER_WIRING.md` → "Deferred:
+> proposal/project metadata" and `STARTUP_RESTRUCTURE_PLAN.md` §7.3 item 5). Reinforced design
+> rule: **proposal/project/`data_session` are NOT sample facts** and must not be stored on the
+> `Sample`/`SampleStore` record — one bar may be measured under different proposals; proposal is a
+> session/queue concern seeded by the (future, facility-provided) worker source, while the sample
+> record stays scoped to physical-sample facts (position, alignment, history).
 
 ---
 

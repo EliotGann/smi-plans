@@ -5,6 +5,19 @@
 > SMI `bluesky-queueserver` (QS), what was built here, and the **exact** profile-collection edits
 > to finish the wiring.
 
+> **⚠️ PRODUCTION QS IS DEFERRED (decision, 2026-06).** Production queueserver use at SMI is **on
+> hold pending a facility-level solution**, so the profile-collection handoff steps below are **not
+> to be applied in production yet**. The blocker is **proposal/project metadata**: today the
+> beamline sets it with `proposal_id` in the IPython session, which writes `RE.md` *in that
+> process*; a QS worker is a **separate process** and would not inherit it, so runs submitted
+> through the queue would carry the wrong/empty `data_session`/proposal/project. Wrapping this
+> per-beamline (stamping proposal/project into every plan + carrying it on each loaded sample) was
+> considered, but the beamline has decided this needs a **facility/NSLS-II-wide answer** (a shared
+> proposal source the queueserver worker reads), not a local workaround. **Everything in `smi-plans`
+> here (the `_qserver` surface, the `*_from_spec` wrappers, the tests) stays valid and ready** — it
+> is the *deployment* that waits. Revisit when the facility provides the shared-proposal mechanism;
+> see "Deferred: proposal/project metadata" below.
+
 ---
 
 ## TL;DR
@@ -21,6 +34,8 @@
 - **`smi-plans` now ships a curated QS surface:** `smi_plans._qserver`. The profile imports it with
   **one line** and regenerates the cache. Proven: `qserver-list-plans-devices
   --ignore-invalid-plans=OFF` exits 0 with **87 plans** and **zero rejections**.
+- **Deferred (not blocking the above):** production rollout waits on a facility-level
+  proposal/project-metadata solution — see the banner above and the dedicated section below.
 
 ---
 
@@ -128,6 +143,12 @@ in-session/GUI code imports the builders from `smi_plans._compose`.)
 ---
 
 ## The profile-collection handoff (apply on the QS host)
+
+> **⚠️ DEFERRED — do not apply in production yet.** These steps are correct and ready, but
+> production QS rollout is on hold pending the facility proposal/project-metadata solution (see the
+> banner at the top and "Deferred: proposal/project metadata" below). They remain useful **now**
+> for *non-production* smoke-testing (e.g. `pixi run -e qs qs-list` to keep proving the worker
+> loads the curated surface) and as the ready-to-go recipe for when QS is greenlit.
 
 > These are the **only** changes needed in
 > `/nsls2/data1/smi/shared/config/bluesky/profile_collection` (remote
@@ -285,3 +306,66 @@ object are best driven through the corresponding `*_from_spec` wrapper.
   echem (`set_potential`), humidity (`set_rh`), mapping/XRR/CD-SAXS/XPCS.
 - **Restrict what a user group sees:** edit `user_group_permissions.yaml` (Step 4), not the
   package.
+
+---
+
+## Deferred: proposal/project metadata (the production blocker)
+
+**Decision (2026-06): production QS at SMI waits on a facility-level solution to this.** It is
+captured here so the eventual implementer has the full context; it is **not** something to solve
+with a local hack.
+
+### The problem
+
+Today the beamline establishes the experiment's identity by running **`proposal_id(...)` in the
+IPython session**. That call writes proposal/project identity into **`RE.md`** (the run-engine
+metadata dict) — keys such as `data_session` / proposal / project / `data_security` — and those
+keys are then stamped into every run's **start document** and used to tag the Tiled writing
+clients. Crucially, `RE.md` lives **in the process that ran `proposal_id`** (the terminal's
+RunEngine).
+
+A queueserver worker is a **different process** with its **own RunEngine and its own `RE.md`**. It
+does **not** run the interactive `proposal_id`, so unless something explicitly carries the
+proposal/project into the worker, **queue-submitted runs would get the wrong or empty
+`data_session`/proposal/project** in their start docs — a data-provenance failure (runs filed under
+no/!wrong proposal).
+
+This is independent of the plan wiring above: the `_qserver` surface and `*_from_spec` wrappers are
+correct; the gap is *where the proposal/project comes from in the worker process*.
+
+### Options that were considered (and why we are NOT doing them now)
+
+1. **Stamp proposal/project into every plan** (e.g. have `acquire`/the `*_from_spec` wrappers read a
+   shared proposal source and merge it into `md`). Workable mechanically, but it hardcodes a
+   per-beamline policy into the plan library and still needs a *trustworthy shared source* of the
+   current proposal that the worker can read.
+2. **Carry proposal/project on each loaded sample** (put them on the `Sample`/`SampleStore` record
+   so "load sample X" pulls its proposal into the run md). This couples experiment identity to the
+   sample bookmark, which is the wrong place for it (one bar can be measured under different
+   proposals; proposal is a *session/queue* fact, not a *sample* fact).
+3. **A process-shared proposal source** (e.g. the proposal in a Redis dict both the terminal and the
+   worker read, like the existing `mdsave`/db=2 pattern). This is the closest to right, but the
+   *authoritative* proposal/data-session for a beamtime is a **facility concern** (it ties to the
+   PASS/proposal system, data-security tags, and the Tiled/data-session contract), so SMI should
+   adopt the facility's shared-proposal mechanism rather than invent a local one.
+
+The beamline's decision: **this needs a facility / NSLS-II-wide answer** (a shared proposal source
+the queueserver worker reads, consistent with how data-session/data-security are assigned
+facility-wide). Production QS is deferred until that exists.
+
+### What this means for the work in this repo
+
+- **Nothing here is wasted or wrong.** The `_qserver` surface, the `*_from_spec` wrappers, the
+  `cast` fix, and the tests are all valid and continue to pass; `pixi run -e qs qs-list` keeps
+  proving the worker loads the curated plans. Only the *production deployment* waits.
+- **When the facility solution lands,** the likely integration point is small and lives in the
+  **profile** (a worker-side hook that seeds `RE.md` proposal/project from the shared source), plus
+  possibly a thin `md`-merge in the `*_from_spec` wrappers if the policy is "stamp at plan time."
+  Re-evaluate options 1/3 above against the facility mechanism at that point.
+- **Sample bookmarks stay scoped to physical-sample facts** (position, alignment, history) — not
+  proposal — per option 2's rejection.
+
+> Cross-references: the sample-metadata design (`docs/SAMPLE_SYSTEM_PLAN.md`) deliberately keeps
+> proposal/project OUT of the sample record for the reason above; the restructure plan's QS section
+> (`docs/STARTUP_RESTRUCTURE_PLAN.md` §7) and the GUI builder skill
+> (`skills/smi-plans-gui-builder.md`) both now note the production-QS deferral.
