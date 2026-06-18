@@ -86,11 +86,14 @@ ExperimentSpec = {
     "reads": ["energy", "waxs", "xbpm2", "xbpm3"],
   },
 
-  "apparatus": {                         # geometry / environment -> the setup() plan
-    "align": {"routine": "alignement_gisaxs_hex", "angle": 0.1},
-    "attenuators_in": ["att2_9"],
+  "apparatus": {                         # geometry / environment
+    "align": {"routine": "alignement_gisaxs_hex", "angle": 0.1},  # -> acquire(align=...) PRE-run hook
+    "attenuators_in": ["att2_9"],        # -> acquire(setup=...) IN-run hook (recorded)
     "heater": {"kind": "linkam"},        # or {"kind": "lakeshore"} or null
     # extensible: rh controller, echem, beamstop, gate valve ...
+    # NB: alignment routines open their own runs + stage detectors, so they MUST map to the
+    # `align` pre-run hook, NOT `setup` -- else RedundantStaging. The codegen/executor must keep
+    # these separate (see _compose.acquire's align vs setup).
   },
 
   "samples": {                           # one run per sample
@@ -166,8 +169,13 @@ reads = [energy, waxs, xbpm2, xbpm3]
 heater = linkam_heater()
 thickness = Signal(name="thickness_nm", value=0.0)
 
-def setup():
+def align(s):
+    # PRE-run: alignment opens its own runs + stages detectors -> must be the `align` hook,
+    # NOT `setup` (else RedundantStaging when the measurement run stages the same detectors).
     yield from alignement_gisaxs_hex(0.1)
+
+def setup():
+    # IN-run: recorded in this run's documents/baseline.
     yield from bps.mv(att2_9.close_cmd, 1); yield from bps.sleep(1)
     yield from manual_step("Load the bar; read prep sheet", signals=[thickness])
 
@@ -185,6 +193,7 @@ def axes_for(s):
 det_exposure_time(1.0, 1.0)
 # RUN THIS:
 RE(acquire_bar(bar, dets, axes_for, reads=reads,
+               align_for=align,                       # PRE-run alignment (opens its own runs)
                setup_for=lambda s: setup(), geometry="reflection",
                scan_name="giwaxs_Tramp_NEXAFS", md={"edge": "S_K"},
                baseline_for=lambda s: [thickness]))

@@ -299,6 +299,9 @@ def acquire_from_spec(spec):
           "scan_name": "giwaxs_Tramp_NEXAFS",
           "project_name": "311234_Doe",
           "md": {"edge": "S_K"},
+          "align": "alignement_gisaxs_hex",         # pre-run alignment routine (optional)
+          "align_angle": 0.1,
+          "atten": ["att2_9"],                       # in-run: foils to close at run open (optional)
           "context": {"th0": 0.0, "flux_signal": "xbpm2.sumX", "flux_threshold": 50},
           "axes": [                                  # OUTERMOST FIRST (nesting order)
             {"type": "temperature", "values": [30, 60, 90], "heater": "linkam"},
@@ -310,6 +313,8 @@ def acquire_from_spec(spec):
         }
 
     Device references everywhere are **names**; they are resolved to live objects in the worker.
+    ``align`` (a routine name) runs as the **pre-run** hook (before the run opens/stages -- the
+    right place for alignment); ``atten`` runs as the **in-run** ``setup`` hook (recorded).
     Returns the plan (``yield from`` it / submit it to the queue).
     """
     from .recipes_combined import build_axes_from_spec
@@ -325,12 +330,23 @@ def acquire_from_spec(spec):
     context = _resolve_axis_context(spec)
     axes = build_axes_from_spec(spec.get("axes", []), context=context)
 
+    # Pre-run alignment routine (a beamline-global plan that opens its own runs) -> the `align`
+    # hook so it does not collide with the measurement run's staging.
+    align = None
+    if spec.get("align"):
+        align_routine = resolve(spec["align"])
+        align_angle = spec.get("align_angle", 0.1)
+        def align():  # noqa: E306 - small local closure
+            yield from align_routine(align_angle)
+    # In-run attenuators-in -> the `setup` hook (recorded in this run).
+    setup = _atten_in_plan(spec.get("atten"))
+
     if exposure is not None:
         yield from det_exposure_time(exposure, exposure)            # noqa: F821 (injected global)
 
     yield from acquire(
-        name, dets, axes, reads=reads, geometry=geometry, scan_name=scan_name, md=md,
-        user_hints=spec.get("user_hints"))
+        name, dets, axes, reads=reads, setup=setup, align=align, geometry=geometry,
+        scan_name=scan_name, md=md, user_hints=spec.get("user_hints"))
 
 
 def _resolve_axis_context(spec):

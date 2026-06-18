@@ -270,10 +270,10 @@ def _check_axis_order(axes):
 # ---------------------------------------------------------------------------
 # The experiment builder
 # ---------------------------------------------------------------------------
-def acquire(name, dets, axes, *, reads=None, setup=None, geometry=None, scan_name="acquire",
-            md=None, baseline=None, name_tokens=None, check_order=True, sample=None,
-            user_hints=None):
-    """Compose ONE run for ONE sample: setup + nested ``axes`` + ``trigger_and_read``.
+def acquire(name, dets, axes, *, reads=None, setup=None, align=None, geometry=None,
+            scan_name="acquire", md=None, baseline=None, name_tokens=None, check_order=True,
+            sample=None, user_hints=None):
+    """Compose ONE run for ONE sample: (align) + setup + nested ``axes`` + ``trigger_and_read``.
 
     This is the compositional heart.  You provide the *beam/q config* (``dets`` + ``reads``),
     the *apparatus/geometry* (``setup`` plan, run once after the run opens), and the
@@ -293,8 +293,20 @@ def acquire(name, dets, axes, *, reads=None, setup=None, geometry=None, scan_nam
         Extra readables recorded at every event (e.g. ``[energy, waxs, xbpm2, xbpm3]``).  The
         axes' own ``record`` Signals and ``reads`` are merged in automatically.
     setup : callable() -> plan, optional
-        Apparatus/geometry setup run ONCE just after ``open_run`` (e.g. set grazing geometry,
-        turn the heater on, ensure attenuators in).  Its moves are recorded in the run.
+        **In-run** apparatus/geometry setup run ONCE just after ``open_run`` *inside the staged
+        measurement run* (e.g. ensure attenuators in, set ``pin_diode.averaging_time``, a
+        :func:`manual_step` whose typed value you want recorded in this run's baseline).  Its
+        moves/reads are recorded in the run.  **Do NOT run an alignment routine here** -- use
+        ``align`` instead (see below): alignment plans open their OWN runs and stage the same
+        detectors, which collides with this run's staging (``RedundantStaging``).
+    align : callable() -> plan, optional
+        **Pre-run** plan executed ONCE *before* the measurement run opens and before ``dets`` are
+        staged.  This is the place for an **alignment routine** (e.g. ``alignement_gisaxs_hex`` /
+        a GISAXS height+theta scan) or any self-contained plan that opens its own run(s) and
+        stages its own detectors -- running it here avoids the ``RedundantStaging`` that occurs
+        if it is run inside the measurement run via ``setup``.  Because it runs outside the run,
+        its results are not recorded in THIS run's stream; capture an alignment offset you care
+        about as a ``baseline`` Signal (see ``technique_B``'s ``aligned_th0`` for the pattern).
     geometry : str, optional
         ``"reflection"`` / ``"transmission"`` (goes in md).
     scan_name : str
@@ -356,21 +368,31 @@ def acquire(name, dets, axes, *, reads=None, setup=None, geometry=None, scan_nam
             yield from setup()
         yield from nest_axes(axes, _measure)
 
+    # Pre-run alignment / self-contained plans run OUTSIDE the measurement run, before staging,
+    # so their own open_run/stage do not collide with this run's (RedundantStaging).
+    if align is not None:
+        yield from align()
+
     run_md = merge_md(md, {"user_hints": dict(user_hints)} if user_hints else {})
     return (yield from one_sample_run(
         _body, dets, sample_name=sample_name, scan_name=scan_name,
         geometry=geometry, md=run_md, baseline=baseline))
 
 
-def acquire_bar(samples, dets, axes_for, *, reads=None, setup_for=None, geometry=None,
-                scan_name="acquire", md=None, baseline_for=None, name_tokens=None,
-                check_order=True, goto=None):
+def acquire_bar(samples, dets, axes_for, *, reads=None, setup_for=None, align_for=None,
+                geometry=None, scan_name="acquire", md=None, baseline_for=None,
+                name_tokens=None, check_order=True, goto=None):
     """Run :func:`acquire` for each sample on a bar (ONE run per sample).
 
     ``axes_for(sample) -> list[ScanAxis]`` and (optionally) ``setup_for(sample) -> plan`` /
-    ``baseline_for(sample) -> list`` are callables so per-sample coordinates (e.g. an aligned
-    incidence zero, per-sample energy lists) can vary.  Each sample is coarse-positioned via
-    ``goto`` (default :func:`_core.goto_sample`) before its run.
+    ``align_for(sample) -> plan`` / ``baseline_for(sample) -> list`` are callables so per-sample
+    coordinates (e.g. an aligned incidence zero, per-sample energy lists) can vary.  Each sample
+    is coarse-positioned via ``goto`` (default :func:`_core.goto_sample`) before its run.
+
+    ``setup_for`` is the **in-run** hook (recorded; attenuators-in, manual steps).
+    ``align_for`` is the **pre-run** hook (alignment routines / self-contained plans that open
+    their own runs + stage their own detectors) -- run it here, NOT in ``setup_for``, to avoid
+    ``RedundantStaging``.  See :func:`acquire` for the ``setup`` vs ``align`` distinction.
 
     For slow-axis economy across the WHOLE bar (move ``waxs.arc`` once for all samples), use
     :func:`_core.multi_sample_run` instead -- that is a different run topology (N runs open at
@@ -380,10 +402,11 @@ def acquire_bar(samples, dets, axes_for, *, reads=None, setup_for=None, geometry
     for s in samples:
         yield from _goto(s)
         axes = axes_for(s)
-        setup = (lambda: setup_for(s)) if setup_for is not None else None
+        setup = (lambda s=s: setup_for(s)) if setup_for is not None else None
+        align = (lambda s=s: align_for(s)) if align_for is not None else None
         baseline = baseline_for(s) if baseline_for is not None else None
         yield from acquire(
-            s.name, dets, axes, reads=reads, setup=setup, geometry=geometry,
+            s.name, dets, axes, reads=reads, setup=setup, align=align, geometry=geometry,
             scan_name=scan_name, md=merge_md(md, s.md), baseline=baseline,
             name_tokens=name_tokens, check_order=check_order)
 

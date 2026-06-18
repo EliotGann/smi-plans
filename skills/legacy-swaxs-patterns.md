@@ -95,8 +95,9 @@ its modern `smi_plans` equivalent. It exists so that:
   reverse_alternate=True)` snakes; the guardrail warns on bad order.
 - **Beam-loss re-seek** (`if xbpm2.sumX.get()<50: re-move energy`): `energy_axis(...,
   flux_signal=xbpm2.sumX, flux_threshold=50)` or `_preprocessors.beam_loss_reseek_wrapper`.
-- **Align-once/measure-many + failure logging:** alignment in `setup`; offsets in `baseline`;
-  `multi_sample_run` aligns up front then sweeps the slow axis once.
+- **Align-once/measure-many + failure logging:** alignment in the `align` pre-run hook (it opens
+  its own runs/stages dets); offsets in `baseline`; `multi_sample_run` aligns up front then sweeps
+  the slow axis once.
 - **GI in-vacuum choreography** (GV7/atten/beamstop): the `setup` plan + `ensure_in_wrapper`.
 - **Up/down energy passes, HDR brackets:** concatenate up+reversed values into one
   `energy_axis`; record an `energy_direction` Signal (see `technique_A_energy_edge`).
@@ -111,7 +112,7 @@ several. Map each to "an axis or a setup step," then compose:
 | Legacy archetype (examples) | smi-plans concern / entry point |
 |---|---|
 | Tender/NEXAFS edge (Richter, Gann, McNeil, Stingelin) | `energy_axis` / `technique_A_energy_edge` |
-| GISAXS/GIWAXS + alignment, multi-sample bar (Fakhraai, Kim*, Ocko) | `incidence_axis` + arc `motor_axis` + `setup(align)` / `technique_B_grazing` |
+| GISAXS/GIWAXS + alignment, multi-sample bar (Fakhraai, Kim*, Ocko) | `incidence_axis` + arc `motor_axis` + `align`(pre-run) / `technique_B_grazing` |
 | Temperature ramp/anneal/melt (Tenney, RPI, Harvard, AFurst) | `temperature_axis` / `technique_C_temperature` |
 | Microfocus raster (Aiello, UCR, Clark, Ferron) | `spatial_grid_axes` / `technique_D_mapping` |
 | Transmission/capillary/solution (Telles, Quan, Liu-Akron, Cai) | transmission geometry + spatial / `technique_E_transmission` |

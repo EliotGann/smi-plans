@@ -56,6 +56,82 @@ def test_compose_software_only_axis_time(sim, inject):
 
 
 # ---------------------------------------------------------------------------
+# Pre-run align hook vs in-run setup (RedundantStaging regression)
+# ---------------------------------------------------------------------------
+def _alignment_like(sim):
+    """A plan shaped like a real alignment routine: it OPENS ITS OWN RUN and STAGES a detector
+    (via bp.rel_scan over the same pil2M the measurement run will stage).  Running this inside an
+    already-staged measurement run raises RedundantStaging; running it BEFORE (the `align` hook)
+    is fine.
+    """
+    def _align():
+        yield from sim.bp.rel_scan([sim.pil2M], sim.piezo.y, -1, 1, 3)
+    return _align
+
+
+def test_align_hook_runs_before_run_no_redundant_staging(sim, inject):
+    """An alignment plan that stages pil2M, passed as `align`, must NOT RedundantStage even when
+    pil2M is also a measurement detector."""
+    C = inject("smi_plans._compose")
+    align = _alignment_like(sim)
+    result = sim.run(C.acquire(
+        "S", [sim.pil2M, sim.pil900KW], [C.energy_axis([2480, 2485])],
+        reads=[sim.energy], align=align, geometry="reflection"))
+    # Two runs: the alignment's own run (3 events) + the measurement run (2 events).
+    o, c = result.run_count()
+    assert o == c == 2
+    assert sim.primary_events(result) == 3 + 2
+
+
+def test_setup_hook_with_alignment_raises_redundant_staging(sim, inject):
+    """Documents the bug the `align` hook fixes: the SAME alignment plan run as the IN-RUN
+    `setup` hook collides with the measurement run's staging."""
+    from ophyd.utils import RedundantStaging
+    C = inject("smi_plans._compose")
+    align = _alignment_like(sim)
+    with pytest.raises(RedundantStaging):
+        sim.run(C.acquire(
+            "S", [sim.pil2M], [C.energy_axis([2480])],
+            reads=[sim.energy], setup=align))
+
+
+def test_align_hook_without_shared_detector_still_runs(sim, inject):
+    """An align plan that stages a DIFFERENT detector also composes (sanity)."""
+    C = inject("smi_plans._compose")
+
+    def _align():
+        yield from sim.bp.count([sim.pil900KW], num=1)
+
+    result = sim.run(C.acquire(
+        "S", [sim.pil2M], [C.energy_axis([2480, 2485])],
+        reads=[sim.energy], align=_align))
+    o, c = result.run_count()
+    assert o == c == 2
+    assert sim.primary_events(result) == 1 + 2
+
+
+def test_acquire_bar_align_for_per_sample(sim, inject):
+    """acquire_bar runs `align_for(sample)` before each sample's run (one align + one data run
+    per sample)."""
+    C = inject("smi_plans._compose")
+    from smi_plans import SampleList
+    bar = SampleList.from_columns(names=["a", "b"], piezo_x=[0, 100], piezo_y=[0, 0])
+
+    def _align_for(s):
+        yield from sim.bp.rel_scan([sim.pil2M], sim.piezo.y, -1, 1, 2)
+
+    def _axes_for(s):
+        return [C.energy_axis([2480])]
+
+    result = sim.run(C.acquire_bar(
+        bar, [sim.pil2M], _axes_for, align_for=_align_for, reads=[sim.energy]))
+    o, c = result.run_count()
+    # per sample: 1 alignment run + 1 data run = 2; two samples = 4
+    assert o == c == 4
+    assert sim.primary_events(result) == (2 + 1) * 2
+
+
+# ---------------------------------------------------------------------------
 # Manual / interactive (input messages)
 # ---------------------------------------------------------------------------
 def test_manual_step_emits_input_and_records(sim, inject):

@@ -34,7 +34,7 @@ from smi_plans._compose import (acquire, energy_axis, temperature_axis,
                                  incidence_axis, motor_axis)
 from smi_plans.technique_C_temperature import linkam_heater
 
-# Beam/q: SAXS+WAXS; geometry: grazing (align in setup); scanning: T -> arc -> ai -> energy -> x
+# Beam/q: SAXS+WAXS; geometry: grazing (align before the run); scanning: T -> arc -> ai -> energy -> x
 heater = linkam_heater()
 th0 = piezo.th.position
 axes = [
@@ -46,10 +46,18 @@ axes = [
     motor_axis("x", piezo.x, [0, 30, 60, 90, 120], speed=0),  # 5 fresh spots -> innermost
 ]
 RE(acquire("PS40nm", [pil2M, pil900KW, xbpm2, xbpm3], axes,
-           reads=[energy, waxs], setup=lambda: alignement_gisaxs_hex(0.1),
+           reads=[energy, waxs],
+           align=lambda: alignement_gisaxs_hex(0.1),        # PRE-run: alignment opens its own runs
+           setup=lambda: bps.mv(att2_9.close_cmd, 1),       # IN-run: recorded (attenuators in)
            geometry="reflection", scan_name="giwaxs_Tramp_NEXAFS_5loc",
            md={"project_name": "311234"}))
 ```
+
+> **`align` vs `setup` (important).** Put an **alignment routine** (or any plan that opens its own
+> runs / stages detectors) in **`align`** — it runs *before* the measurement run opens and stages,
+> so its own staging does not collide (`RedundantStaging`). Put **in-run** configuration whose
+> values you want *recorded in this run* (attenuators-in, `manual_step`, `pin_diode.averaging_time`)
+> in **`setup`** — it runs just after `open_run`, inside the staged run.
 
 That single call is **one Bluesky run** for the whole sample experiment: temperature is moved
 3×, the in-vacuum arc 6×, and every moved/changed quantity is recorded so the filename can
@@ -123,8 +131,9 @@ smi_plans/
 ### `_compose.py` — the composition layer (start here)
 - `ScanAxis(name, values, move=…/device=…, record=…, settle=…, per_point=…, speed=…)` — one
   loop dimension: the values, how to *visit* each, and what Signal to *record*.
-- `acquire(name, dets, axes, *, reads, setup, geometry, scan_name, md, baseline, …)` — compose
-  ONE run for ONE sample = `setup` + nested `axes` + `trigger_and_read`, filename auto-built
+- `acquire(name, dets, axes, *, reads, setup, align, geometry, scan_name, md, baseline, …)` —
+  compose ONE run for ONE sample = (`align` pre-run) + `setup` (in-run) + nested `axes` +
+  `trigger_and_read`, filename auto-built
   from what the axes record, with the ordering guardrail.
 - `acquire_bar(samples, dets, axes_for, …)` — one run per sample on a `SampleList`.
 - Ready-made axes: `energy_axis`, `temperature_axis`, `incidence_axis`, `motor_axis`
@@ -239,15 +248,20 @@ For a bespoke experiment (the common case), assemble axes — don't write a mono
 
 1. **Beam / q:** choose `dets` (e.g. `saxs_waxs_dets()` or an explicit list) and the `reads`
    you always want recorded (e.g. `[energy, waxs, xbpm2, xbpm3]`).
-2. **Apparatus / geometry:** write a `setup` plan run once per run (align, heater on, atten in,
-   beamstop). Its moves are recorded.
+2. **Apparatus / geometry:** decide what runs *before* the run vs *inside* it.
+   - **`align`** (pre-run): an **alignment** routine (`alignement_gisaxs_hex`, a height/theta scan)
+     or any plan that opens its own runs / stages detectors. It runs before the measurement run
+     opens & stages (so it can't `RedundantStaging`). It is *not* recorded in this run — capture an
+     offset you care about as a `baseline` Signal.
+   - **`setup`** (in-run): config you want *recorded* in this run — heater on, attenuators in,
+     beamstop, a `manual_step`. Runs once just after `open_run`. Its moves/reads are recorded.
 3. **Sampling / scanning:** build a list of axes (`temperature_axis`, `motor_axis("arc", …)`,
    `incidence_axis`, `energy_axis`, `spatial_grid_axes`, `time_axis`, …) **outermost first**
    (slow/in-vacuum first).
 4. **Manual / interactive (if any):** add `manual_step(...)` in `setup` to capture a hand-set
    value, a `manual_axis(...)` for a user-stepped dimension, or wrap the whole thing in
    `manual_loop(...)` for an open-ended user-paced bar. Typed values land on recorded Signals.
-5. `acquire(name, dets, axes, reads=…, setup=…, geometry=…, scan_name=…, md=…, baseline=…)`.
+5. `acquire(name, dets, axes, reads=…, setup=…, align=…, geometry=…, scan_name=…, md=…, baseline=…)`.
    The filename is auto-built from what the axes record; the order guardrail warns if a slow
    axis is nested too deep.
 6. For a bar, loop with `acquire_bar(samples, dets, axes_for, …)` (one run/sample) or use

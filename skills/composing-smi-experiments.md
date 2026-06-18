@@ -52,12 +52,16 @@ whatever the axes record.
    reads = [energy, waxs, xbpm2, xbpm3] # recorded every event -> available as {tokens}
    ```
 
-2. **Apparatus / geometry:** a `setup` plan run ONCE after the run opens (align, heater on,
-   attenuators in). Its moves are recorded.
+2. **Apparatus / geometry:** split *pre-run* from *in-run*.
+   - **`align`** (pre-run): an alignment routine — it opens its OWN runs and stages detectors, so
+     it must run *before* the measurement run (else `RedundantStaging`).
+   - **`setup`** (in-run): config recorded in this run (heater on, attenuators in). Runs once after
+     `open_run`; its moves are recorded.
    ```python
+   def align():
+       yield from alignement_gisaxs_hex(0.1)         # PRE-run: opens its own runs / stages dets
    def setup():
-       yield from alignement_gisaxs_hex(0.1)
-       yield from bps.mv(att2_9.close_cmd, 1); yield from bps.sleep(1)
+       yield from bps.mv(att2_9.close_cmd, 1); yield from bps.sleep(1)   # IN-run: recorded
    ```
 
 3. **Sampling / scanning:** build the axes, OUTERMOST FIRST (slow/in-vacuum first).
@@ -80,7 +84,7 @@ whatever the axes record.
 5. **Assemble into ONE run:**
    ```python
    from smi_plans._compose import acquire
-   RE(acquire("PS40nm", dets, axes, reads=reads, setup=setup,
+   RE(acquire("PS40nm", dets, axes, reads=reads, align=align, setup=setup,
               geometry="reflection", scan_name="giwaxs_Tramp_NEXAFS_5loc",
               md={"project_name": "311234"}))
    ```
