@@ -69,11 +69,10 @@ whatever the axes record.
    from smi_plans._compose import (energy_axis, temperature_axis, incidence_axis,
                                     motor_axis, spatial_grid_axes, SPEED_SLOW, SPEED_FAST)
    from smi_plans.technique_C_temperature import linkam_heater
-   th0 = piezo.th.position
    axes = [
        temperature_axis(linkam_heater(), [30, 60, 90]),        # slow
        motor_axis("arc", waxs, [0, 20], speed=SPEED_SLOW),     # slow, in-vacuum
-       incidence_axis(piezo.th, th0, [0.10, 0.20]),
+       incidence_axis(piezo.th, None, [0.10, 0.20]),           # None -> relative to aligned zero
        energy_axis([2470, 2475, 2480], flux_signal=xbpm2.sumX, flux_threshold=50),
        motor_axis("x", piezo.x, [0, 30, 60, 90, 120], speed=SPEED_FAST),  # 5 fresh spots
    ]
@@ -101,7 +100,7 @@ whatever the axes record.
 |---|---|---|---|
 | Energy sweep | `energy_axis(energies, flux_signal=…, flux_threshold=…)` | medium | energy + I0 re-seek |
 | Temperature ramp | `temperature_axis(heater, setpoints, soak=…, first_soak=…)` | slow | live T (equilibrates) |
-| Incident angle | `incidence_axis(th_axis, th0, angles)` | medium | relative ai |
+| Incident angle | `incidence_axis(th_axis, th0, angles)` (use `th0=None` after alignment: relative/aligned-zero) | medium | relative ai |
 | Any motor (arc/prs/piezo) | `motor_axis(name, device, values, speed=…)` | you set | device position |
 | Spatial (single/line/grid) | `spatial_grid_axes(x_motor=…, x=…, y_motor=…, y=…)` → list | fast | positions |
 | Applied potential | `potential_axis(set_potential, V_list, readback=…)` | medium | commanded V |

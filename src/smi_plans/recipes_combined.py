@@ -287,8 +287,10 @@ def build_axes_from_spec(spec, *, context):
                                         soak=s.get("soak", 60.0),
                                         first_soak=s.get("first_soak")))
         elif kind == "incidence":
-            out.append(incidence_axis(context["th_axis"], context.get("th0", 0.0),
-                                      s["values"]))
+            # th0 resolution: the axis's own "th0", else the context "th0", else None
+            # (relative / aligned-zero mode -- anchor to wherever alignment left theta).
+            th0 = s.get("th0", context.get("th0", None))
+            out.append(incidence_axis(context["th_axis"], th0, s["values"]))
         elif kind == "motor":
             out.append(motor_axis(s.get("name", "motor"), context[s["device"]], s["values"],
                                   record=s.get("record", True),

@@ -381,6 +381,13 @@ def _resolve_axis_context(spec):
                 context[dev_name] = resolve(dev_name)
         if ax.get("type") == "incidence" and "th_axis" in ax and "th_axis" not in context:
             context["th_axis"] = resolve(ax["th_axis"])
+    # Default the incidence theta axis to ``piezo.th`` if an incidence axis is present and no
+    # ``th_axis`` was given (the SMI grazing default).  With no per-axis/context ``th0`` either,
+    # ``build_axes_from_spec`` then uses relative/aligned-zero mode (th0=None) -- anchoring to
+    # wherever the pre-run ``align`` hook left theta.
+    if any(ax.get("type") == "incidence" for ax in spec.get("axes", [])) \
+            and "th_axis" not in context:
+        context["th_axis"] = resolve("piezo.th")
     # a heater referenced by the temperature axis (string) -> built Heater
     for ax in spec.get("axes", []):
         if ax.get("type") == "temperature" and "heater" in ax and "heater" not in context:

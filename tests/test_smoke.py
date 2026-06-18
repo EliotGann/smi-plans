@@ -132,6 +132,84 @@ def test_acquire_bar_align_for_per_sample(sim, inject):
 
 
 # ---------------------------------------------------------------------------
+# Relative / aligned-zero incidence (th0=None): anchor wherever alignment left theta
+# ---------------------------------------------------------------------------
+def _primary_field(result, key):
+    """All values of data ``key`` across primary-stream events, in order."""
+    stream = {d["uid"]: d.get("name", "primary")
+              for n, d in result.docs if n == "descriptor"}
+    out = []
+    for n, d in result.docs:
+        if n == "event" and stream.get(d["descriptor"]) == "primary" and key in d["data"]:
+            out.append(d["data"][key])
+    return out
+
+
+def test_incidence_relative_anchors_to_live_position(sim, inject):
+    """th0=None captures the LIVE theta at first move (post-alignment) as the zero and sweeps
+    relative offsets from it; the absolute motor goes to aligned_zero + ai."""
+    C = inject("smi_plans._compose")
+    # Simulate "alignment left theta at a nonzero aligned zero" just before the run:
+    sim.piezo.th.set(-0.1124).wait()
+
+    result = sim.run(C.acquire(
+        "S", [sim.pil900KW], [C.incidence_axis(sim.piezo.th, None, [0.0, 0.1, 0.2])],
+        reads=[sim.piezo.th], geometry="reflection"))
+    sim.assert_one_run(result)
+    # the recorded REAL incident angle is the relative offset (0, 0.1, 0.2), NOT the absolute th
+    assert _primary_field(result, "incident_angle") == [0.0, 0.1, 0.2]
+    # the absolute theta readback is aligned_zero + ai
+    th = _primary_field(result, "piezo_th")
+    assert th == pytest.approx([-0.1124, -0.0124, 0.0876])
+
+
+def test_incidence_relative_records_captured_zero_in_baseline(sim, inject):
+    """The captured aligned zero is recorded on the incidence_zero Signal (baseline-able)."""
+    C = inject("smi_plans._compose")
+    sim.piezo.th.set(0.0500).wait()
+    axis = C.incidence_axis(sim.piezo.th, None, [0.0, 0.1])
+    # the zero Signal is created inside the axis; expose it by running and reading the stream
+    result = sim.run(C.acquire(
+        "S", [sim.pil900KW], [axis], reads=[sim.piezo.th], geometry="reflection"))
+    sim.assert_one_run(result)
+    assert _primary_field(result, "incident_angle") == [0.0, 0.1]
+    th = _primary_field(result, "piezo_th")
+    assert th == pytest.approx([0.0500, 0.1500])
+
+
+def test_incidence_absolute_mode_unchanged(sim, inject):
+    """th0 as a number keeps the classic absolute behavior (th0 + ai)."""
+    C = inject("smi_plans._compose")
+    sim.piezo.th.set(99.0).wait()  # live position must be IGNORED in absolute mode
+    result = sim.run(C.acquire(
+        "S", [sim.pil900KW], [C.incidence_axis(sim.piezo.th, 0.0, [0.1, 0.2])],
+        reads=[sim.piezo.th], geometry="reflection"))
+    sim.assert_one_run(result)
+    assert _primary_field(result, "incident_angle") == [0.1, 0.2]
+    assert _primary_field(result, "piezo_th") == pytest.approx([0.1, 0.2])
+
+
+def test_incidence_relative_after_align_hook_end_to_end(sim, inject):
+    """End-to-end: an `align` plan moves theta to the aligned zero, THEN the th0=None incidence
+    axis anchors to it -- proving the ordering (align runs before axes capture the zero)."""
+    C = inject("smi_plans._compose")
+    sim.piezo.th.set(0.0).wait()
+
+    def _align():
+        # stand-in for alignment_gisaxs: leaves theta at a nonzero aligned zero, opens its own run
+        yield from sim.bp.rel_scan([sim.pil2M], sim.piezo.y, -1, 1, 2)
+        yield from sim.bps.mv(sim.piezo.th, -0.2000)
+
+    result = sim.run(C.acquire(
+        "S", [sim.pil2M], [C.incidence_axis(sim.piezo.th, None, [0.0, 0.1])],
+        reads=[sim.piezo.th], align=_align, geometry="reflection"))
+    o, c = result.run_count()
+    assert o == c == 2  # alignment run + measurement run
+    assert _primary_field(result, "incident_angle") == [0.0, 0.1]
+    assert _primary_field(result, "piezo_th") == pytest.approx([-0.2000, -0.1000])
+
+
+# ---------------------------------------------------------------------------
 # Manual / interactive (input messages)
 # ---------------------------------------------------------------------------
 def test_manual_step_emits_input_and_records(sim, inject):

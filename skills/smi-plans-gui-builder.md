@@ -108,7 +108,7 @@ ExperimentSpec = {
   "axes": [                              # scan stack, OUTERMOST FIRST
     {"type": "temperature", "values": [30, 60, 90], "soak": 120, "first_soak": 300},
     {"type": "motor", "name": "arc", "device": "waxs", "values": [0, 20], "speed": "slow"},
-    {"type": "incidence", "values": [0.10, 0.20]},
+    {"type": "incidence", "values": [0.10, 0.20]},   # th0 omitted -> relative/aligned-zero
     {"type": "energy", "grid": {"edge": 2472, "near": [-2, 2, 0.25], "post": [2, 60, 5]},
                        "flux_reseek": {"signal": "xbpm2.sumX", "threshold": 50}},
     {"type": "spatial", "x_step": 30, "x_n": 5},     # 5 fresh spots
@@ -180,11 +180,13 @@ def setup():
     yield from manual_step("Load the bar; read prep sheet", signals=[thickness])
 
 def axes_for(s):
-    th0 = piezo.th.position
     return [
         temperature_axis(heater, [30, 60, 90], soak=120, first_soak=300),
         motor_axis("arc", waxs, [0, 20], speed=SPEED_SLOW),
-        incidence_axis(piezo.th, th0, s.incident_angles or [0.1, 0.2]),
+        # th0=None -> RELATIVE / aligned-zero: anchor incidence to wherever the pre-run `align`
+        # left theta (do NOT pre-read piezo.th.position here -- axes_for runs BEFORE align).
+        # The recorded `incident_angle` pseudo-axis is the true relative angle (-> {incident_angle}).
+        incidence_axis(piezo.th, None, s.incident_angles or [0.1, 0.2]),
         energy_axis(np.unique(np.r_[np.arange(2470,2474,0.25), np.arange(2474,2532,5)]),
                     flux_signal=xbpm2.sumX, flux_threshold=50),
         motor_axis("x", piezo.x, [piezo.x.position + i*30 for i in range(5)], speed=SPEED_FAST),
@@ -205,6 +207,14 @@ Generator requirements:
 - Emit the `SampleList` from the samples block; choose `acquire` (single sample) vs `acquire_bar`
   (multiple) vs `multi_sample_run` (if the user opts into arc-economy) based on the spec.
 - Render axis order verbatim from the list; render device names as bare identifiers.
+- **Alignment goes in the `align`/`align_for` PRE-run hook, never `setup`** (alignment opens its
+  own runs + stages detectors -> `RedundantStaging` if run in-run). Keep `setup`/`setup_for` for
+  in-run, recorded config (attenuators-in, manual steps).
+- **Incidence anchoring: emit `incidence_axis(piezo.th, None, angles)` (relative/aligned-zero) by
+  default** when an alignment runs -- do NOT emit `th0 = piezo.th.position` read at axis-build time
+  (in `acquire_bar`, `axes_for` runs *before* the align hook, so a pre-read captures the *nominal*,
+  not the aligned, theta). Only emit a numeric `th0` if the user explicitly anchors to an absolute
+  theta. The recorded `incident_angle` is always the true relative angle.
 - Put the actual `RE(...)` call clearly marked and LAST (and/or behind a `if __name__` guard so
   pasting the definitions is harmless and the user runs the final line deliberately).
 - Be deterministic and diff-friendly (stable import order, consistent formatting). Consider

@@ -488,17 +488,61 @@ def temperature_axis(heater, setpoints, *, tol=1.0, poll=10.0, timeout=7200.0, s
                     speed=SPEED_SLOW, reverse_alternate=reverse_alternate)
 
 
-def incidence_axis(th_axis, th0, incident_angles, *, settle=0.0, record_name="incident_angle"):
+def incidence_axis(th_axis, th0, incident_angles, *, settle=0.0, record_name="incident_angle",
+                   zero_record_name="incidence_zero"):
     """A grazing-incidence-angle axis: visit ``th0 + ai`` for each ``ai``.
 
-    Records the *relative* incident angle (``ai``) via a Signal so ``{incident_angle}`` is a
-    token, while moving the absolute axis to ``th0 + ai``.  Medium speed.
+    The axis records the **real incident angle** ``ai`` (a *relative*, physical quantity) on a
+    pseudo-axis :class:`Signal` (default name ``incident_angle``), so ``{incident_angle}`` is a
+    filename token and the true angle lands in the **primary stream** -- regardless of the
+    absolute motor readback.  Medium speed.
+
+    Anchoring (``th0``)
+    -------------------
+    * ``th0`` a number -> absolute anchor: visit ``th0 + ai`` (the classic behavior).
+    * ``th0 is None`` -> **relative / aligned-zero mode**: the axis captures the **live**
+      ``th_axis`` position *at the moment it first runs* (i.e. *after* any alignment that ran in
+      the run's pre-run ``align`` hook left the motor at the aligned theta-zero) and treats THAT
+      as incidence-angle 0, visiting ``captured_zero + ai``.  The motor readback need not read 0;
+      the recorded ``incident_angle`` is the true relative angle ``ai``.  The captured zero is
+      also recorded once on a ``incidence_zero`` Signal (add it to ``baseline`` if you want it
+      persisted with the run).
+
+    The relative mode is the right choice when an alignment routine leaves ``th_axis`` at the
+    grazing zero but its absolute readback is some nonzero aligned value (the SMI
+    ``alignment_gisaxs`` case): build the axis with ``th0=None`` and it anchors to wherever
+    alignment left theta -- you do NOT pre-read ``piezo.th.position`` at axis-build time (which,
+    in ``acquire_bar``, happens *before* the align hook runs).
+
+    Parameters
+    ----------
+    th_axis : positioner
+        The theta axis to move (e.g. ``piezo.th``).
+    th0 : float or None
+        Absolute anchor, or ``None`` for relative/aligned-zero mode (capture live at first move).
+    incident_angles : sequence
+        The incident angles (deg), relative to the anchor.
+    settle : float
+        Sleep after each move.
+    record_name : str
+        Name of the recorded real-incident-angle pseudo-axis Signal (``{incident_angle}``).
+    zero_record_name : str
+        Name of the Signal that captures the (absolute) anchor zero (relative mode only).
     """
     sig = Signal(name=record_name, value=0.0)                    # noqa: F821
+    zero_sig = Signal(name=zero_record_name, value=0.0)          # noqa: F821
+    state = {"zero": th0}     # if th0 is None, filled lazily on the first move (post-alignment)
 
     def _move(ai):
-        yield from bps.mv(th_axis, th0 + ai)
-        # the recorded value (ai) is set by ScanAxis.move_to via bps.mv(record, ai)
+        # Relative/aligned-zero mode: on the first point, read the LIVE theta via a message
+        # (bps.rd -> the readback) and adopt it as the zero.  This runs after the run's `align`
+        # hook, so it captures the aligned theta -- not the nominal value from axis-build time.
+        if state["zero"] is None:
+            state["zero"] = yield from bps.rd(th_axis)
+            yield from bps.mv(zero_sig, state["zero"])           # record the captured zero once
+        yield from bps.mv(th_axis, state["zero"] + ai)
+        # the recorded value (ai, the real incident angle) is set by ScanAxis.move_to via
+        # bps.mv(record, ai) -- so {incident_angle} carries the true relative angle.
         if settle:
             yield from bps.sleep(settle)
 

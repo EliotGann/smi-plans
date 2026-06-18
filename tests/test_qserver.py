@@ -125,6 +125,37 @@ def test_acquire_from_spec_resolves_names_to_objects(sim, qmod):
     assert sim.primary_events(result) == 3
 
 
+def test_acquire_from_spec_incidence_relative_with_align(sim, qmod):
+    """An incidence axis with no th0 (relative) + an align routine: theta anchors to wherever
+    align left it, and the recorded incident_angle is the relative offset."""
+    sim.piezo.th.set(0.0).wait()
+    spec = {
+        "name": "PS_film",
+        "geometry": "reflection",
+        "detectors": ["pil2M"],
+        "reads": ["piezo.th"],
+        "align": "alignement_gisaxs_hex",   # sim moves piezo.th to 0.1 (see SimBeamline)
+        "align_angle": 0.1,
+        "axes": [{"type": "incidence", "values": [0.0, 0.05]}],   # no th0 -> relative
+    }
+    result = sim.run(qmod.acquire_from_spec(spec))
+    # (the sim alignement_gisaxs_hex just moves piezo.th; it does not open its own run, so the
+    # data run is the only one here -- the real routine opens alignment runs.)
+    sim.assert_one_run(result)
+    # the sim alignement_gisaxs_hex moves piezo.th to align_angle (0.1); relative incidence
+    # then anchors to 0.1 and sweeps +[0, 0.05].  The recorded incident_angle is the RELATIVE
+    # offset (0, 0.05), and the absolute theta is 0.1 + offset.
+    stream = {d["uid"]: d.get("name", "primary")
+              for n, d in result.docs if n == "descriptor"}
+    rows = [(d["data"]["incident_angle"], d["data"]["piezo_th"])
+            for n, d in result.docs
+            if n == "event" and stream.get(d["descriptor"]) == "primary"]
+    inc = [r[0] for r in rows]
+    th = [r[1] for r in rows]
+    assert inc == [0.0, 0.05]
+    assert th == pytest.approx([0.1, 0.15])
+
+
 def test_nexafs_from_spec_with_explicit_energies(sim, qmod):
     spec = {
         "name": "P3HT",
