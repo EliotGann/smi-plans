@@ -62,7 +62,7 @@ See :func:`time_series_run`'s ``monitors`` argument.
 import time
 
 from ._samples import SampleList
-from ._core import (one_sample_run, goto_sample, saxs_waxs_dets, fname, merge_md)
+from ._core import (one_sample_run, goto_sample, saxs_waxs_dets, fname, merge_md, dedup_readables)
 from ._preprocessors import (fresh_spot_wrapper, ensure_in_wrapper, cleanup_wrapper,
                              baseline_wrapper)
 
@@ -123,7 +123,7 @@ def time_series_point(dets, reads, elapsed_sig, t0, *, frame_index_sig=None, fra
     if frame_index_sig is not None and frame_i is not None:
         yield from bps.mv(frame_index_sig, int(frame_i))
         extra.append(frame_index_sig)
-    yield from bps.trigger_and_read(list(dets) + list(reads) + extra)
+    yield from bps.trigger_and_read(dedup_readables(list(dets) + list(reads) + extra))
 
 
 # ---------------------------------------------------------------------------

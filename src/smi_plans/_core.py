@@ -56,7 +56,62 @@ __all__ = [
     "fname",
     "COMMON_TOKENS",
     "merge_md",
+    "dedup_readables",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Readable de-duplication (avoid duplicate-data-key collisions in trigger_and_read)
+# ---------------------------------------------------------------------------
+def _is_ancestor(maybe_ancestor, dev):
+    """True if ``maybe_ancestor`` is ``dev`` or one of its ophyd ancestors (via ``.parent``)."""
+    node = dev
+    seen = 0
+    while node is not None and seen < 50:        # cycle / runaway guard
+        if node is maybe_ancestor:
+            return True
+        node = getattr(node, "parent", None)
+        seen += 1
+    return False
+
+
+def dedup_readables(readables):
+    """Drop readables that would collide on data keys in one ``trigger_and_read``.
+
+    bluesky raises ``ValueError: Data keys ... collide`` if two readables in the same Event
+    report overlapping keys.  The common SMI case is reading a **detector together with one of
+    its own sub-devices** -- e.g. ``pil900KW`` (whose ``.motors`` ``kind`` is ``normal``, so it
+    records ``waxs_arc``/``waxs_bsx``/``waxs_bsy``) and ``waxs``, which **is** ``pil900KW.motors``
+    (``waxs = pil900KW.motors`` on the beamline).  Reading both records those keys twice.
+
+    Rule: keep a readable unless it is an **ancestor/descendant of**, or **identical to**, a
+    readable already kept.  When both an ancestor and a descendant are requested, the **ancestor
+    wins** (it records a superset, so the descendant's ``{token}`` still resolves).  Order is
+    otherwise preserved; non-ophyd readables (no ``.parent``) are de-duplicated only by identity.
+    """
+    kept = []
+    for r in readables:
+        replaced = False
+        skip = False
+        for i, k in enumerate(kept):
+            if k is r:
+                skip = True
+                break
+            if _is_ancestor(r, k):        # r is an ancestor of kept k -> r records a superset
+                kept[i] = r               # keep the ancestor instead of the descendant
+                replaced = True
+                break
+            if _is_ancestor(k, r):        # kept k is an ancestor of r -> k already covers r
+                skip = True
+                break
+        if replaced:
+            # collapse any OTHER kept descendants of r so the ancestor isn't duplicated
+            kept = [x for x in kept if x is r or not _is_ancestor(r, x)]
+            continue
+        if skip:
+            continue
+        kept.append(r)
+    return kept
 
 
 # ---------------------------------------------------------------------------

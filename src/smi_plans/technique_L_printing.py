@@ -74,7 +74,7 @@ of constants, cleanup (clear the trigger bit, return the beam off the filament) 
 
 import time
 
-from ._core import (one_sample_run, saxs_waxs_dets, fname)
+from ._core import (one_sample_run, saxs_waxs_dets, fname, dedup_readables)
 from ._preprocessors import cleanup_wrapper
 
 try:
@@ -258,7 +258,7 @@ def printer_triggered_run(name, *, n_events=None, until_stopped=False, t=1.0, de
             count += 1
             yield from bps.mv(print_event, count)
             # Record ONE frame for this print event into the single open run.
-            yield from bps.trigger_and_read(list(dets) + list(reads))
+            yield from bps.trigger_and_read(dedup_readables(list(dets) + list(reads)))
             # Acknowledge the fire so the next wait sees the NEXT fire (clear bi4).
             yield from bps.mv(trigger, 0)
             print("printer fire #{} recorded".format(count))
@@ -337,9 +337,9 @@ def print_crystallization_followup_run(name, *, duration_s=1800, waxs_arc=(0, 13
         # Repeat the arc sweep until the follow-up duration elapses -- ONE run, many events.
         while (time.time() - t0) <= duration_s:
             for wa in arc_positions:
-                yield from bps.mv(waxs, wa)                        # noqa: F821
+                yield from bps.mv(waxs.arc, wa)                    # noqa: F821
                 yield from bps.mv(elapsed, float(time.time() - t0))
-                yield from bps.trigger_and_read(list(dets) + list(reads))
+                yield from bps.trigger_and_read(dedup_readables(list(dets) + list(reads)))
             cycle += 1
             print("crystallization sweep cycle #{} (t={:.0f}s)".format(cycle, time.time() - t0))
 

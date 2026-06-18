@@ -113,7 +113,7 @@ def giwaxs_tempramp_energy_5loc(
     # --- the axis stack (outermost first) -------------------------------------------------
     axes = [
         temperature_axis(heater, list(temperatures), soak=120.0, first_soak=300.0),
-        motor_axis("arc", waxs, list(waxs_arc), record=True, speed=SPEED_SLOW),  # noqa: F821
+        motor_axis("arc", waxs.arc, list(waxs_arc), record=True, speed=SPEED_SLOW),  # noqa: F821
         incidence_axis(piezo.th, th0, list(incident_angles)),    # noqa: F821
         energy_axis(list(edge_energies), settle=2.0,
                     flux_signal=xbpm2.sumX, flux_threshold=50),  # noqa: F821
@@ -226,7 +226,7 @@ def giwaxs_manual_swap_bar(*, waxs_arc=(0, 20), incident_angles=(0.1,), t=1.0, a
 
         th0 = piezo.th.position                                  # noqa: F821
         axes = [
-            motor_axis("arc", waxs, list(waxs_arc), record=True, speed=SPEED_SLOW),  # noqa: F821
+            motor_axis("arc", waxs.arc, list(waxs_arc), record=True, speed=SPEED_SLOW),  # noqa: F821
             incidence_axis(piezo.th, th0, list(incident_angles)),  # noqa: F821
         ]
         yield from acquire(

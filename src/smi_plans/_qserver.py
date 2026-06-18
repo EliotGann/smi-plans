@@ -152,7 +152,8 @@ DEVICE_REGISTRY = {
     "xbpm3": "beam-position monitor / I0 (BPM3)",
     # beam / energy
     "energy": "DCM photon energy (eV) pseudo-positioner",
-    "waxs": "WAXS arc positioner (``waxs`` settable; ``waxs.arc.position`` readback)",
+    "waxs": "WAXS motion sub-device (``waxs = pil900KW.motors``; a READABLE, not movable)",
+    "waxs.arc": "WAXS arc positioner (the settable arc axis -- use this for an arc motor axis)",
     # sample motion
     "piezo": "SmarAct fine stage (``.x/.y/.z/.th``)",
     "piezo.x": "SmarAct fine X",
@@ -305,7 +306,7 @@ def acquire_from_spec(spec):
           "context": {"th0": 0.0, "flux_signal": "xbpm2.sumX", "flux_threshold": 50},
           "axes": [                                  # OUTERMOST FIRST (nesting order)
             {"type": "temperature", "values": [30, 60, 90], "heater": "linkam"},
-            {"type": "motor", "name": "arc", "device": "waxs", "values": [0, 20], "speed": 2},
+            {"type": "motor", "name": "arc", "device": "waxs.arc", "values": [0, 20], "speed": 2},
             {"type": "incidence", "values": [0.10, 0.20]},
             {"type": "energy", "values": [2470, 2472, 2474], "flux_threshold": 50},
             {"type": "spatial", "x": [0, 30, 60, 90, 120]}

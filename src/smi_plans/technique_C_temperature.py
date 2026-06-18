@@ -49,7 +49,7 @@ hook, fresh-spot dose walking, ensure-attenuators-in, baseline capture of the se
 """
 
 from ._samples import SampleList
-from ._core import (goto_sample, saxs_waxs_dets, merge_md)
+from ._core import (goto_sample, saxs_waxs_dets, merge_md, dedup_readables)
 from ._compose import acquire, ScanAxis, SPEED_SLOW
 from ._preprocessors import (fresh_spot_wrapper, ensure_in_wrapper, cleanup_wrapper)
 
@@ -239,7 +239,7 @@ def temperature_point(dets, reads, heater, *, settle=0.0):
         yield from bps.sleep(settle)
     # ``heater.readback`` is read live by the RunEngine in trigger_and_read, so the recorded
     # temperature is the current one -- no mirror step needed (message-pure).
-    yield from bps.trigger_and_read(list(dets) + list(reads) + [heater.readback])
+    yield from bps.trigger_and_read(dedup_readables(list(dets) + list(reads) + [heater.readback]))
 
 
 # ---------------------------------------------------------------------------

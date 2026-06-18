@@ -37,7 +37,7 @@ configuration via :func:`_compose.acquire`'s ``setup=`` hook (ensure-attenuators
 """
 
 from ._samples import SampleList
-from ._core import (multi_sample_run, goto_sample, saxs_waxs_dets, merge_md)
+from ._core import (multi_sample_run, goto_sample, saxs_waxs_dets, merge_md, dedup_readables)
 from ._compose import acquire, incidence_axis, motor_axis, SPEED_SLOW
 from ._preprocessors import ensure_in_wrapper, fresh_spot_wrapper, cleanup_wrapper
 
@@ -118,7 +118,7 @@ def giwaxs_run(name, *, th0, incident_angles, waxs_arc=(0,), t=1.0, dets=None, r
     # records the *relative* angle on an `incident_angle` Signal (-> {incident_angle} token);
     # the arc motor is recorded via `reads` (so {waxs_arc} resolves).
     axes = [
-        motor_axis("arc", waxs, list(waxs_arc), record=True, speed=SPEED_SLOW),  # noqa: F821
+        motor_axis("arc", waxs.arc, list(waxs_arc), record=True, speed=SPEED_SLOW),  # noqa: F821
         incidence_axis(th_axis, th0, list(incident_angles)),
     ]
 
@@ -208,7 +208,7 @@ def giwaxs_bar_arc_economy(samples, *, align, align_angle=0.1, waxs_arc=(0, 20),
         for ai in angles:
             yield from bps.mv(th_axis, th0 + ai)
             yield from bps.mv(incident_angle, float(ai))
-            yield from bps.trigger_and_read(list(dets) + reads + [incident_angle])
+            yield from bps.trigger_and_read(dedup_readables(list(dets) + reads + [incident_angle]))
         yield from bps.mv(th_axis, th0)
 
     yield from det_exposure_time(t, t)                                    # noqa: F821
@@ -216,7 +216,7 @@ def giwaxs_bar_arc_economy(samples, *, align, align_angle=0.1, waxs_arc=(0, 20),
     # ensure attenuators in for the whole interleaved block
     def _go():
         yield from multi_sample_run(
-            samples, slow_axis=waxs, slow_positions=list(waxs_arc),    # noqa: F821
+            samples, slow_axis=waxs.arc, slow_positions=list(waxs_arc),    # noqa: F821
             point=_point, dets=dets, scan_name="giwaxs_arc_economy",
             geometry="reflection", md=md, settle=1.0)
 

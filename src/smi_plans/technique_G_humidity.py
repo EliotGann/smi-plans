@@ -72,7 +72,7 @@ flow setpoints, cleanup (restore dry-flush) on error.  Long equilibration is don
 import time
 
 from ._samples import SampleList
-from ._core import (one_sample_run, goto_sample, saxs_waxs_dets, fname, merge_md)
+from ._core import (one_sample_run, goto_sample, saxs_waxs_dets, fname, merge_md, dedup_readables)
 from ._compose import acquire, nest_axes, ScanAxis, SPEED_SLOW, SPEED_FAST
 from ._devices import humidity_signal
 from ._preprocessors import (ensure_in_wrapper, cleanup_wrapper, baseline_wrapper,
@@ -189,7 +189,7 @@ def rh_point(dets, reads, rh_sig, *, settle=0.0, elapsed_sig=None, t0=None):
     if elapsed_sig is not None and t0 is not None:
         yield from bps.mv(elapsed_sig, time.monotonic() - t0)
         extra.append(elapsed_sig)
-    yield from bps.trigger_and_read(list(dets) + list(reads) + extra)
+    yield from bps.trigger_and_read(dedup_readables(list(dets) + list(reads) + extra))
 
 
 # ---------------------------------------------------------------------------
@@ -434,8 +434,8 @@ def rh_swelling_kinetics_run(name, target_rh, *, n_frames=None, duration=None, p
             while (time.monotonic() - clk["t0"]) < duration:
                 yield from bps.mv(frame_index, i)
                 yield from bps.mv(elapsed, time.monotonic() - clk["t0"])
-                yield from bps.trigger_and_read(
-                    list(dets) + list(reads) + [rh_setpoint, frame_index, rh, elapsed])
+                yield from bps.trigger_and_read(dedup_readables(
+                    list(dets) + list(reads) + [rh_setpoint, frame_index, rh, elapsed]))
                 i += 1
                 yield from bps.sleep(period)
 

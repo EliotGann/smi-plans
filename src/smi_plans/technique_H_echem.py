@@ -71,7 +71,7 @@ generator, never wall-clock ``time.sleep``.
 import time
 
 from ._samples import SampleList
-from ._core import (one_sample_run, goto_sample, saxs_waxs_dets, fname, merge_md)
+from ._core import (one_sample_run, goto_sample, saxs_waxs_dets, fname, merge_md, dedup_readables)
 from ._compose import acquire, nest_axes, ScanAxis, SPEED_MEDIUM, SPEED_FAST
 from ._preprocessors import (ensure_in_wrapper, cleanup_wrapper, baseline_wrapper,
                              fresh_spot_wrapper)
@@ -111,7 +111,7 @@ def potential_point(dets, reads, applied_sig, *, readback=None, settle=0.0,
     if elapsed_sig is not None and t0 is not None:
         yield from bps.mv(elapsed_sig, time.monotonic() - t0)
         extra.append(elapsed_sig)
-    yield from bps.trigger_and_read(list(dets) + list(reads) + extra)
+    yield from bps.trigger_and_read(dedup_readables(list(dets) + list(reads) + extra))
 
 
 # ---------------------------------------------------------------------------

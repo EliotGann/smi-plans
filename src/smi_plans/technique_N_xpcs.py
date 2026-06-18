@@ -67,7 +67,7 @@ Gold / reference: ``legacy/30-user-chen_xpcs.py::grid_scan_xpcs`` (what NOT to d
 """
 
 from ._samples import SampleList
-from ._core import (one_sample_run, goto_sample, fname, merge_md)
+from ._core import (one_sample_run, goto_sample, fname, merge_md, dedup_readables)
 from ._preprocessors import (ensure_in_wrapper, cleanup_wrapper, baseline_wrapper,
                              beam_loss_reseek_wrapper)
 
@@ -207,7 +207,7 @@ def xpcs_burst_run(name, *, frame_time=0.01, n_frames=1000, period=None, dets=No
         # Configure the internal burst, then a SINGLE staged trigger_and_read records it.
         yield from configure_burst(bdet, frame_time, n_frames, period=period)
         # The detector acquires all n_frames internally; one event, one multi-frame datum.
-        yield from bps.trigger_and_read(list(dets) + list(reads))
+        yield from bps.trigger_and_read(dedup_readables(list(dets) + list(reads)))
 
     plan = one_sample_run(_measure, dets, sample_name=sample_name,
                           scan_name="xpcs_burst", geometry=geometry,

@@ -56,7 +56,7 @@ Key types
 
 import warnings
 
-from ._core import one_sample_run, goto_sample, fname, merge_md
+from ._core import one_sample_run, goto_sample, fname, merge_md, dedup_readables
 
 try:
     import bluesky.plan_stubs as bps
@@ -361,7 +361,11 @@ def acquire(name, dets, axes, *, reads=None, setup=None, align=None, geometry=No
     sample_name = fname(name, *name_tokens)
 
     def _measure():
-        yield from bps.trigger_and_read(list(dets) + all_reads)
+        # De-dup so a detector and one of its own sub-devices (e.g. pil900KW + waxs, where
+        # waxs IS pil900KW.motors) don't both report the same keys in one Event (which raises
+        # "Data keys ... collide").  The ancestor (the detector) is kept; the descendant's
+        # {token} still resolves from it.
+        yield from bps.trigger_and_read(dedup_readables(list(dets) + all_reads))
 
     def _body():
         if setup is not None:

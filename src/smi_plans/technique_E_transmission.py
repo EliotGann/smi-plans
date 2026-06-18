@@ -50,7 +50,7 @@ reach-back, no value baked into a filename string.
 """
 
 from ._samples import SampleList
-from ._core import (goto_sample, saxs_waxs_dets, merge_md)
+from ._core import (goto_sample, saxs_waxs_dets, merge_md, dedup_readables)
 from ._compose import acquire, spatial_grid_axes
 from ._preprocessors import (fresh_spot_wrapper, ensure_in_wrapper, cleanup_wrapper)
 
@@ -110,7 +110,7 @@ def transmission_point(dets, reads, *, settle=0.0):
     """
     if settle:
         yield from bps.sleep(settle)
-    yield from bps.trigger_and_read(list(dets) + list(reads))
+    yield from bps.trigger_and_read(dedup_readables(list(dets) + list(reads)))
 
 
 # ---------------------------------------------------------------------------
@@ -258,7 +258,7 @@ def transmission_bar(samples, *, t=1.0, dets=None, reads=None, geometry="transmi
         yield from _measure_bar_once()
     else:
         for wa in waxs_arc:                                          # SLOW axis outermost
-            yield from bps.mv(waxs, wa)                              # noqa: F821
+            yield from bps.mv(waxs.arc, wa)                          # noqa: F821
             if settle_arc:
                 yield from bps.sleep(settle_arc)
             yield from _measure_bar_once()

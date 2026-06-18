@@ -107,7 +107,7 @@ ExperimentSpec = {
 
   "axes": [                              # scan stack, OUTERMOST FIRST
     {"type": "temperature", "values": [30, 60, 90], "soak": 120, "first_soak": 300},
-    {"type": "motor", "name": "arc", "device": "waxs", "values": [0, 20], "speed": "slow"},
+    {"type": "motor", "name": "arc", "device": "waxs.arc", "values": [0, 20], "speed": "slow"},
     {"type": "incidence", "values": [0.10, 0.20]},   # th0 omitted -> relative/aligned-zero
     {"type": "energy", "grid": {"edge": 2472, "near": [-2, 2, 0.25], "post": [2, 60, 5]},
                        "flux_reseek": {"signal": "xbpm2.sumX", "threshold": 50}},
@@ -182,7 +182,7 @@ def setup():
 def axes_for(s):
     return [
         temperature_axis(heater, [30, 60, 90], soak=120, first_soak=300),
-        motor_axis("arc", waxs, [0, 20], speed=SPEED_SLOW),
+        motor_axis("arc", waxs.arc, [0, 20], speed=SPEED_SLOW),
         # th0=None -> RELATIVE / aligned-zero: anchor incidence to wherever the pre-run `align`
         # left theta (do NOT pre-read piezo.th.position here -- axes_for runs BEFORE align).
         # The recorded `incident_angle` pseudo-axis is the true relative angle (-> {incident_angle}).
@@ -207,6 +207,14 @@ Generator requirements:
 - Emit the `SampleList` from the samples block; choose `acquire` (single sample) vs `acquire_bar`
   (multiple) vs `multi_sample_run` (if the user opts into arc-economy) based on the spec.
 - Render axis order verbatim from the list; render device names as bare identifiers.
+- **The WAXS arc axis is `waxs.arc`, NOT `waxs`.** On the beamline `waxs = pil900KW.motors` (a
+  readable container, *not* movable); the settable arc is `waxs.arc`. Emit `motor_axis("arc",
+  waxs.arc, ...)` and, in a spec, `{"type": "motor", "device": "waxs.arc", ...}`. (`bps.mv(waxs,
+  ...)` fails.) Keeping `waxs` in `reads` is fine -- it records the arc/beamstop readbacks.
+- **Duplicate-key safety is automatic.** `acquire`/`*_from_spec` de-dup the `trigger_and_read`
+  list, so listing both `pil900KW` (a det) and `waxs` (= its `.motors`) no longer raises "Data
+  keys ... collide" -- the detector is kept and `{waxs_arc}` still resolves. The GUI need not
+  prune `reads`, but should not list a device twice for no reason.
 - **Alignment goes in the `align`/`align_for` PRE-run hook, never `setup`** (alignment opens its
   own runs + stages detectors -> `RedundantStaging` if run in-run). Keep `setup`/`setup_for` for
   in-run, recorded config (attenuators-in, manual steps).

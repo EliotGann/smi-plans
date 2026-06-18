@@ -33,7 +33,7 @@ Gold reference: ``CFN/Yugang/2026C1_Tomo.py::run_tomo`` (the rotation series, ``
 + ``pil900KW``, ``xbpm3`` flux).  Coupled rotation/translation: ``legacy/34-oleg.py::aaron_rot``
 and ``legacy/35-oleg-cube.py`` (``bp.inner_product_scan([pil2M], N, <rot>, ..., stage.x, ...,
 piezo.y, ...)`` -- the sinogram idiom).  Texture/pole-figure: ``legacy/30-user-Kang.py::
-rotation_saxs`` (``bp.grid_scan(dets, <rot>, *rot_range, waxs, *waxs_range, 1)``) and
+rotation_saxs`` (``bp.grid_scan(dets, <rot>, *rot_range, waxs.arc, *waxs_range, 1)``) and
 ``legacy/30-user-Tiwale.py::SAXS_S_edge_allprs`` (rock the rotation axis 1001 pts at fixed grazing
 ``prs0 = 1.275``).
 
@@ -213,7 +213,7 @@ def texture_pole_figure_run(name, prs_range=(-90, 90, 91), *, ai0=0.0, ai=0.0, t
     Sets the grazing incidence once (``th_axis`` -> ``ai0 + ai``), records it as a Signal, then
     rocks ``stage.phi`` over ``prs_range`` -- the in-plane orientation sweep that builds a pole
     figure (Kang ``rotation_saxs``; Tiwale ``SAXS_S_edge_allprs`` at fixed ``prs0``).  Optionally
-    sweep the WAXS arc as a *second* scanned axis (``bp.grid_scan(dets, stage.phi, *prs_range, waxs,
+    sweep the WAXS arc as a *second* scanned axis (``bp.grid_scan(dets, stage.phi, *prs_range, waxs.arc,
     *waxs_arc_grid, 1)``) so the whole texture map is still ONE run.
 
     Parameters
@@ -266,10 +266,10 @@ def texture_pole_figure_run(name, prs_range=(-90, 90, 91), *, ai0=0.0, ai=0.0, t
             # stage.phi (in-plane) x waxs.arc texture map, ONE run (Kang grid_scan).
             wa0, wa1 = arc_vals[0], arc_vals[-1]
             yield from bp.grid_scan(all_dets, stage.phi, start, stop, n,  # noqa: F821
-                                    waxs, wa0, wa1, len(arc_vals))        # noqa: F821
+                                    waxs.arc, wa0, wa1, len(arc_vals))    # noqa: F821
         else:
             if arc_vals:
-                yield from bps.mv(waxs, arc_vals[0])               # noqa: F821
+                yield from bps.mv(waxs.arc, arc_vals[0])           # noqa: F821
             yield from bp.rel_scan(all_dets, stage.phi, start, stop, n, md=run_md)  # noqa: F821
 
     body = _plan()

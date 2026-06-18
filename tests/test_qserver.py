@@ -98,7 +98,7 @@ def test_acquire_from_spec_builds_one_run(sim, qmod):
         "project_name": "311234_Test",
         "axes": [
             {"type": "temperature", "values": [30, 60], "heater": "linkam"},
-            {"type": "motor", "name": "arc", "device": "waxs", "values": [0, 20], "speed": 2},
+            {"type": "motor", "name": "arc", "device": "waxs.arc", "values": [0, 20], "speed": 2},
             {"type": "incidence", "values": [0.10, 0.20]},
         ],
         "context": {"th_axis": "piezo.th", "th0": 0.0},

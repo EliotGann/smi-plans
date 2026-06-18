@@ -52,7 +52,7 @@ the right attenuation), baseline capture of constants (SDD, energy, beam-center)
 """
 
 from ._samples import SampleList
-from ._core import (one_sample_run, fname, merge_md)
+from ._core import (one_sample_run, fname, merge_md, dedup_readables)
 from ._preprocessors import (ensure_in_wrapper, cleanup_wrapper, baseline_wrapper)
 
 try:
@@ -141,12 +141,12 @@ def agbh_calibration_run(*, name="AgBH", t=1.0, dets=None, reads=None, sdd_posit
 
     def _measure():
         if sdd_positions is None:
-            yield from bps.trigger_and_read(list(dets) + list(reads))
+            yield from bps.trigger_and_read(dedup_readables(list(dets) + list(reads)))
         else:
             for z in sdd_positions:                             # SDD scan: one event per distance
                 yield from bps.mv(_sdd_axis, z)
                 yield from bps.sleep(0.5)                        # let the detector settle
-                yield from bps.trigger_and_read(list(dets) + list(reads))
+                yield from bps.trigger_and_read(dedup_readables(list(dets) + list(reads)))
 
     plan = one_sample_run(_measure, dets, sample_name=sample_name,
                           scan_name="agbh_calibration", geometry=geometry,
@@ -235,13 +235,13 @@ def attenuator_ladder_run(attenuators, *, name="atten_ladder", t=2.0, dets=None,
         # 1) reference frame with no test attenuator in.
         yield from bps.mv(atten_label, "none")
         yield from bps.sleep(settle)
-        yield from bps.trigger_and_read(list(dets) + list(reads))
+        yield from bps.trigger_and_read(dedup_readables(list(dets) + list(reads)))
         # 2) each attenuator in turn: insert -> record -> retract.
         for att in attenuators:
             yield from bps.mv(att, in_cmd)
             yield from bps.mv(atten_label, getattr(att, "name", str(att)))
             yield from bps.sleep(settle)
-            yield from bps.trigger_and_read(list(dets) + list(reads))
+            yield from bps.trigger_and_read(dedup_readables(list(dets) + list(reads)))
             yield from bps.mv(att, out_cmd)
 
     plan = one_sample_run(_measure, dets, sample_name=sample_name,
@@ -333,7 +333,7 @@ def direct_beam_scan_run(*, name="direct_beam", t=0.3, dets=None, reads=None, mo
                 _x, -x_range, x_range, int(x_num),             # inner (fast)
                 snake_axes=True)
         else:
-            yield from bps.trigger_and_read(list(dets) + list(reads))
+            yield from bps.trigger_and_read(dedup_readables(list(dets) + list(reads)))
 
     plan = one_sample_run(_measure, dets, sample_name=sample_name,
                           scan_name="direct_beam_check", geometry=geometry,

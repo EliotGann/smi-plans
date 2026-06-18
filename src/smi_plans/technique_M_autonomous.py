@@ -68,7 +68,7 @@ benchmark a controller **without beam time**, then run it unchanged on the real 
 import time
 
 from ._samples import SampleList
-from ._core import (one_sample_run, goto_sample, fname, merge_md)
+from ._core import (one_sample_run, goto_sample, fname, merge_md, dedup_readables)
 from ._preprocessors import (ensure_in_wrapper, cleanup_wrapper, baseline_wrapper)
 
 try:
@@ -172,7 +172,7 @@ def measure_for_agent(params, *, dets=None, reads=None, apply_params=None, t=1.0
     def _measure():
         if apply_params is not None:
             yield from apply_params(params)                    # realize params inside the run
-        yield from bps.trigger_and_read(list(dets) + list(reads) + param_sigs)
+        yield from bps.trigger_and_read(dedup_readables(list(dets) + list(reads) + param_sigs))
 
     return (yield from one_sample_run(
         _measure, dets, sample_name=sample_name, scan_name=scan_name,

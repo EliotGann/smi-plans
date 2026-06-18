@@ -38,7 +38,7 @@ from smi_plans.technique_C_temperature import linkam_heater
 heater = linkam_heater()
 axes = [
     temperature_axis(heater, [30, 60, 90]),                 # slow  -> outermost
-    motor_axis("arc", waxs, [0, 20], speed=2),              # slow, in-vacuum
+    motor_axis("arc", waxs.arc, [0, 20], speed=2),          # slow, in-vacuum (waxs.arc, NOT waxs)
     incidence_axis(piezo.th, None, [0.10, 0.20]),           # None -> relative to the aligned zero
     energy_axis(np.linspace(2470, 2490, 41),                # DCM energy sweep
                 flux_signal=xbpm2.sumX, flux_threshold=50),

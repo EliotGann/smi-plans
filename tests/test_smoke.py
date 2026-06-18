@@ -15,7 +15,7 @@ def test_compose_nested_axes_one_run(sim, inject):
     C = inject("smi_plans._compose")
     th0 = 0.0
     axes = [
-        C.motor_axis("arc", sim.waxs, [0, 20], record=True, speed=C.SPEED_SLOW),
+        C.motor_axis("arc", sim.waxs.arc, [0, 20], record=True, speed=C.SPEED_SLOW),
         C.incidence_axis(sim.piezo.th, th0, [0.1, 0.2]),
         C.energy_axis([2470, 2475, 2480], settle=0.0),
         C.motor_axis("x", sim.piezo.x, [0, 30, 60, 90, 120], record=True, speed=C.SPEED_FAST),
@@ -32,7 +32,7 @@ def test_compose_ordering_guardrail_warns(sim, inject):
     C = inject("smi_plans._compose")
     bad = [
         C.motor_axis("x", sim.piezo.x, [0, 30, 60], speed=C.SPEED_FAST),   # fast outer (bad)
-        C.motor_axis("arc", sim.waxs, [0, 20], speed=C.SPEED_SLOW),        # slow inner (bad)
+        C.motor_axis("arc", sim.waxs.arc, [0, 20], speed=C.SPEED_SLOW),        # slow inner (bad)
     ]
     with pytest.warns(UserWarning, match="slow axis"):
         list(C.acquire("S", [sim.pil900KW], bad, reads=[sim.waxs], check_order=True))
@@ -56,6 +56,42 @@ def test_compose_software_only_axis_time(sim, inject):
 
 
 # ---------------------------------------------------------------------------
+# Duplicate-data-key collision regression (waxs = pil900KW.motors)
+# ---------------------------------------------------------------------------
+def test_reads_waxs_with_pil900KW_det_does_not_collide(sim, inject):
+    """The canonical GUI pattern: dets include pil900KW (records waxs_arc via its .motors) AND
+    reads include waxs (which IS pil900KW.motors).  Without de-dup, the shared trigger_and_read
+    raises 'Data keys ... collide'.  acquire must de-dup so it produces one clean run, and the
+    waxs_arc key is still recorded (from pil900KW)."""
+    C = inject("smi_plans._compose")
+    dets = [sim.pil900KW, sim.pil2M]
+    reads = [sim.energy, sim.waxs, sim.xbpm2, sim.xbpm3]   # waxs == pil900KW.motors
+    result = sim.run(C.acquire("S", dets, [C.energy_axis([2470, 2475])],
+                               reads=reads, geometry="transmission"))
+    sim.assert_one_run(result)
+    assert sim.primary_events(result) == 2
+    # the WAXS motor data is still recorded (from the kept ancestor pil900KW), so the arc token
+    # resolves -- and crucially it appears exactly ONCE (no duplicate-key collision).
+    stream = {d["uid"]: d.get("name", "primary")
+              for n, d in result.docs if n == "descriptor"}
+    arc_keys = set()
+    for n, d in result.docs:
+        if n == "event" and stream.get(d["descriptor"]) == "primary":
+            arc_keys |= {k for k in d["data"] if "arc" in k and "setpoint" not in k}
+    assert arc_keys, "expected the WAXS arc readback to be recorded"
+
+
+def test_dedup_readables_keeps_ancestor_drops_descendant(sim, inject):
+    """Unit check of the de-dup rule: an ancestor (pil900KW) and its descendant (waxs) collapse
+    to just the ancestor, regardless of order."""
+    from smi_plans._core import dedup_readables
+    assert dedup_readables([sim.pil900KW, sim.waxs]) == [sim.pil900KW]
+    assert dedup_readables([sim.waxs, sim.pil900KW]) == [sim.pil900KW]   # ancestor wins
+    # unrelated readables are all kept, order preserved
+    assert dedup_readables([sim.energy, sim.xbpm2]) == [sim.energy, sim.xbpm2]
+
+
+# ---------------------------------------------------------------------------
 # Pre-run align hook vs in-run setup (RedundantStaging regression)
 # ---------------------------------------------------------------------------
 def _alignment_like(sim):
@@ -67,7 +103,6 @@ def _alignment_like(sim):
     def _align():
         yield from sim.bp.rel_scan([sim.pil2M], sim.piezo.y, -1, 1, 3)
     return _align
-
 
 def test_align_hook_runs_before_run_no_redundant_staging(sim, inject):
     """An alignment plan that stages pil2M, passed as `align`, must NOT RedundantStage even when

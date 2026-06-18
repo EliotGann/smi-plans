@@ -59,7 +59,7 @@ axis) on error.
 """
 
 from ._samples import SampleList
-from ._core import (one_sample_run, goto_sample, fname, merge_md)
+from ._core import (one_sample_run, goto_sample, fname, merge_md, dedup_readables)
 from ._preprocessors import (ensure_in_wrapper, cleanup_wrapper)
 
 try:
@@ -168,7 +168,7 @@ def xrr_point(th_axis, th_value, dets, reads, incident_angle_sig, *, settle=1.0,
     if settle:
         yield from bps.sleep(settle)
     yield from bps.mv(incident_angle_sig, float(th_value))
-    yield from bps.trigger_and_read(list(dets) + list(reads) + [incident_angle_sig])
+    yield from bps.trigger_and_read(dedup_readables(list(dets) + list(reads) + [incident_angle_sig]))
 
 
 # ---------------------------------------------------------------------------
@@ -381,7 +381,7 @@ def xrr_liquid_run(name, angles, *, piezo_y_origin, bdm_th_origin, bdm_sample_di
                 yield from atten_ladder(2 * alpha)                 # ladder vs 2*alpha (BDM)
             yield from bps.sleep(settle)
             yield from bps.mv(incident_angle, float(alpha))
-            yield from bps.trigger_and_read(list(dets) + list(reads) + [incident_angle])
+            yield from bps.trigger_and_read(dedup_readables(list(dets) + list(reads) + [incident_angle]))
         yield from _move(0)                                        # return liquid + BDM to origin
 
     return (yield from one_sample_run(_measure, dets, sample_name=sample_name,

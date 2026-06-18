@@ -107,12 +107,12 @@ def test_recipe_build_axes_from_spec(sim, inject):
     R = inject("smi_plans.recipes_combined")
     C = inject("smi_plans._compose")
     spec = [
-        {"type": "motor", "name": "arc", "device": "waxs", "values": [0, 20],
+        {"type": "motor", "name": "arc", "device": "waxs_arc", "values": [0, 20],
          "speed": C.SPEED_SLOW},
         {"type": "incidence", "values": [0.1, 0.2]},
         {"type": "energy", "values": [2470, 2475, 2480]},
     ]
-    ctx = {"waxs": sim.waxs, "th_axis": sim.piezo.th, "th0": 0.0, "energy": sim.energy}
+    ctx = {"waxs_arc": sim.waxs.arc, "th_axis": sim.piezo.th, "th0": 0.0, "energy": sim.energy}
     axes = R.build_axes_from_spec(spec, context=ctx)
     assert [a.name for a in axes] == ["arc", "incidence", "energy"]
     msgs = sim.messages(C.acquire("S", [sim.pil900KW, sim.pil2M], axes,
