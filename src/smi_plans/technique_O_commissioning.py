@@ -150,7 +150,7 @@ def agbh_calibration_run(*, name="AgBH", t=1.0, dets=None, reads=None, sdd_posit
 
     plan = one_sample_run(_measure, dets, sample_name=sample_name,
                           scan_name="agbh_calibration", geometry=geometry,
-                          md=merge_md({"calibrant": "AgBehenate"}, md), baseline=base)
+                          md=merge_md({"calibrant": "AgBehenate"}, md), baseline=base, reads=reads)
     if atten_in is not None:
         plan = ensure_in_wrapper(plan, atten_in)
     return (yield from plan)
@@ -247,7 +247,7 @@ def attenuator_ladder_run(attenuators, *, name="atten_ladder", t=2.0, dets=None,
     plan = one_sample_run(_measure, dets, sample_name=sample_name,
                           scan_name="attenuator_ladder", geometry=geometry,
                           md=merge_md({"purpose": "attenuator_characterization"}, md),
-                          baseline=base)
+                          baseline=base, reads=reads)
     if always_in is not None:
         plan = ensure_in_wrapper(plan, always_in)
     return (yield from plan)
@@ -337,7 +337,7 @@ def direct_beam_scan_run(*, name="direct_beam", t=0.3, dets=None, reads=None, mo
 
     plan = one_sample_run(_measure, dets, sample_name=sample_name,
                           scan_name="direct_beam_check", geometry=geometry,
-                          md=merge_md({"purpose": "direct_beam"}, md), baseline=base)
+                          md=merge_md({"purpose": "direct_beam"}, md), baseline=base, reads=reads)
     if atten_in is not None:
         plan = ensure_in_wrapper(plan, atten_in)
     return (yield from plan)

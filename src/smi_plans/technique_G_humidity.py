@@ -302,7 +302,7 @@ def rh_step_series_run(name, rh_setpoints, *, measure_at_rh=1, t=1.0, dets=None,
 
         plan = one_sample_run(_body, dets, sample_name=fname(name, *name_tokens),
                               scan_name="rh_step_series", geometry=geometry,
-                              md=md, baseline=base)
+                              md=md, baseline=base, reads=reads)
     else:
         # DEFAULT: take ``measure_at_rh`` events at each equilibrated setpoint -- an inner
         # frame axis (no frame token recorded); the live RH is read live at each event because
@@ -441,7 +441,7 @@ def rh_swelling_kinetics_run(name, target_rh, *, n_frames=None, duration=None, p
 
         plan = one_sample_run(_body, dets, sample_name=sample_name,
                               scan_name="rh_swelling_kinetics", geometry=geometry,
-                              md=md, baseline=base)
+                              md=md, baseline=base, reads=reads)
 
     if dose_motor is not None and dose_step is not None:
         plan = fresh_spot_wrapper(plan, dose_motor, dose_step)

@@ -224,7 +224,7 @@ def potential_step_run(name, potentials, *, set_potential, potential_readback=No
 
         plan = one_sample_run(_body, dets, sample_name=sample_name,
                               scan_name="potential_step", geometry=geometry,
-                              md=md, baseline=base)
+                              md=md, baseline=base, reads=reads)
     else:
         # DEFAULT: take ``measure_at_v`` events at each equilibrated potential -- an inner frame
         # axis (no frame token) carrying the per-event ``settle``.
@@ -426,7 +426,7 @@ def doping_state_run(name, states, *, apply, measure_per_state=1, t=1.0, dets=No
 
         plan = one_sample_run(_body, dets, sample_name=sample_name,
                               scan_name="doping_state_series", geometry=geometry,
-                              md=md, baseline=base)
+                              md=md, baseline=base, reads=reads)
     else:
         # DEFAULT: take ``measure_per_state`` events at each state -- an inner frame axis (no
         # frame token) carrying the per-event ``settle``.

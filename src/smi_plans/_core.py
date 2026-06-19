@@ -46,6 +46,14 @@ except Exception:  # pragma: no cover - outside the beamline env
     bps = None
     bpp = None
 
+try:
+    # The area-detector trigger mixin whose `trigger` enforces stage-before-trigger
+    # (QuadEMV33 / pin_diode and the Pilatus detectors derive from it).  Used to decide which
+    # *reads* must be staged with the run (see `_needs_staging`).
+    from ophyd.areadetector.trigger_mixins import TriggerBase as _TriggerBase
+except Exception:  # pragma: no cover - ophyd layout differs / outside beamline env
+    _TriggerBase = None
+
 
 __all__ = [
     "one_sample_run",
@@ -57,6 +65,7 @@ __all__ = [
     "COMMON_TOKENS",
     "merge_md",
     "dedup_readables",
+    "stageable_reads",
 ]
 
 
@@ -112,6 +121,58 @@ def dedup_readables(readables):
             continue
         kept.append(r)
     return kept
+
+
+def _needs_staging(obj):
+    """True if ``obj`` is a read whose ``trigger`` *requires* prior staging.
+
+    The failure this guards against is the ophyd area-detector trigger mixin
+    (``ophyd.areadetector.trigger_mixins.TriggerBase`` / ``SingleTrigger``), whose ``trigger``
+    raises ``"This detector is not ready to trigger. Call the stage() method before
+    triggering."`` when the device was not staged.  ``QuadEMV33`` (``pin_diode``) and the
+    Pilatus detectors are of this family.
+
+    We deliberately do **not** treat every ``Stageable`` device as needing staging: a generic
+    ophyd ``Device`` (``energy``, ``xbpm2``, ``waxs`` ...) also exposes a *no-op* ``stage``, but
+    those are only read -- staging them was never required and doing so now would (a) change
+    long-standing behavior and (b) risk ``RedundantStaging`` if a nested plan stages them too.
+    So we restrict to devices that actually enforce stage-before-trigger.
+
+    Detection is by the ``_acquisition_signal`` attribute that ``TriggerBase`` installs (robust
+    to import paths), with an ``isinstance`` fast-path when the mixin is importable.  Plain
+    ``Signal`` filename-token objects have no ``stage`` at all and are excluded too.
+    """
+    if not callable(getattr(obj, "stage", None)):
+        return False
+    if _TriggerBase is not None and isinstance(obj, _TriggerBase):
+        return True
+    # Fallback when the mixin class is not importable in this env: the staged-trigger family is
+    # exactly the set of devices that own an ``_acquisition_signal``.
+    return hasattr(obj, "_acquisition_signal")
+
+
+def stageable_reads(dets, reads):
+    """Reads that must be staged but are not already covered by ``dets``.
+
+    ``trigger_and_read(dets + reads)`` will *trigger* every triggerable in ``reads`` (e.g.
+    ``pin_diode``), but historically only ``dets`` were staged -- so a triggerable read blew up
+    with ``RuntimeError: This detector is not ready to trigger``.  This returns the subset of
+    ``reads`` that (a) is stageable and (b) is not ``dets`` nor an ancestor/descendant of a
+    ``det`` (which would cause ophyd ``RedundantStaging``).  Order is preserved.
+    """
+    dets = list(dets or [])
+    extra = []
+    for r in (reads or []):
+        if not _needs_staging(r):
+            continue
+        # already staged as a det, or a det is its ancestor/descendant -> skip (avoid
+        # RedundantStaging); also skip if we already picked an overlapping read.
+        if any(d is r or _is_ancestor(d, r) or _is_ancestor(r, d) for d in dets):
+            continue
+        if any(e is r or _is_ancestor(e, r) or _is_ancestor(r, e) for e in extra):
+            continue
+        extra.append(r)
+    return extra
 
 
 # ---------------------------------------------------------------------------
@@ -251,7 +312,7 @@ def declare_saxs_waxs_streams(saxs_det=None, waxs_det=None):
 # One run per sample
 # ---------------------------------------------------------------------------
 def one_sample_run(measure, dets, *, sample_name, scan_name, geometry=None,
-                   md=None, baseline=None):
+                   md=None, baseline=None, reads=None):
     """Wrap ``measure`` in a single staged run for one sample.
 
     This is the canonical Tier-4 envelope.  ``measure`` is a *generator-function taking no
@@ -278,6 +339,13 @@ def one_sample_run(measure, dets, *, sample_name, scan_name, geometry=None,
     baseline : list, optional
         Devices recorded in a baseline stream at run open/close (constants: SDD, attenuator
         state, alignment offsets, temperature setpoint ...).
+    reads : list, optional
+        The same ``reads`` you pass to ``trigger_and_read`` alongside ``dets``.  Any read that
+        is a stageable, *triggerable* device (e.g. ``pin_diode`` / ``QuadEMV33``) is staged
+        with the run too -- otherwise triggering it raises ``"This detector is not ready to
+        trigger. Call the stage() method before triggering."``.  Reads that don't need staging
+        (``energy``, ``xbpm2``, ``Signal`` token objects) and reads already covered by ``dets``
+        are ignored, so this is safe to always pass.
 
     Returns
     -------
@@ -290,7 +358,11 @@ def one_sample_run(measure, dets, *, sample_name, scan_name, geometry=None,
         {"sample_name": sample_name},        # name template always last so it is authoritative
     )
 
-    @bpp.stage_decorator(dets)
+    # Stage detectors AND any triggerable reads that need staging (e.g. pin_diode); skip reads
+    # already covered by dets to avoid ophyd RedundantStaging.
+    to_stage = list(dets) + stageable_reads(dets, reads)
+
+    @bpp.stage_decorator(to_stage)
     @bpp.run_decorator(md=run_md)
     def _inner():
         yield from measure()
@@ -306,7 +378,7 @@ def one_sample_run(measure, dets, *, sample_name, scan_name, geometry=None,
 # ---------------------------------------------------------------------------
 def multi_sample_run(samples, slow_axis, slow_positions, point, *,
                      dets, scan_name, geometry=None, md=None,
-                     goto=None, settle=0.0):
+                     goto=None, settle=0.0, reads=None):
     """Open one run per sample, sweep a slow axis ONCE, and record every sample at each step.
 
     This is the sanctioned form of "multiple open runs at once": it minimizes travel of a
@@ -338,6 +410,11 @@ def multi_sample_run(samples, slow_axis, slow_positions, point, *,
         (slow-step, sample) so the fast stage is at the right sample before the point plan.
     settle : float
         Sleep after each ``slow_axis`` move (let the arc/phi settle).
+    reads : list, optional
+        The ``reads`` your ``point`` plan passes to ``trigger_and_read`` alongside ``dets``.
+        Any stageable, triggerable read (e.g. ``pin_diode`` / ``QuadEMV33``) is staged for the
+        whole interleaved block too; reads that don't need staging or are already covered by
+        ``dets`` are ignored, so it is safe to always pass.
 
     Notes
     -----
@@ -388,5 +465,5 @@ def multi_sample_run(samples, slow_axis, slow_positions, point, *,
         open_keys.clear()
 
     plan = bpp.finalize_wrapper(_body(), _close_remaining())
-    plan = bpp.stage_wrapper(plan, dets)
+    plan = bpp.stage_wrapper(plan, list(dets) + stageable_reads(dets, reads))
     return (yield from plan)

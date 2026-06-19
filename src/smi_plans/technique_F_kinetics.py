@@ -228,7 +228,7 @@ def time_series_run(name, *, n_frames=None, duration=None, period=1.0, t=0.5, de
 
     plan = one_sample_run(_measure, dets, sample_name=sample_name,
                           scan_name="time_series_kinetics", geometry=geometry,
-                          md=md, baseline=baseline)
+                          md=md, baseline=baseline, reads=reads)
 
     # Layer opt-in idioms (innermost effect first).
     if dose_motor is not None and dose_step is not None:
@@ -306,7 +306,7 @@ def kinetics_run(name, *, action=None, n_frames=10, period=5.0, t=0.5, dets=None
 
     plan = one_sample_run(_measure, dets, sample_name=sample_name,
                           scan_name="kinetics_action_series", geometry=geometry,
-                          md=md, baseline=baseline)
+                          md=md, baseline=baseline, reads=reads)
     if dose_motor is not None and dose_step is not None:
         plan = fresh_spot_wrapper(plan, dose_motor, dose_step)
     if atten_in is not None:
@@ -380,7 +380,7 @@ def blade_coating_run(name, *, coat_start=10.0, measure_pos=87.0, infuse_seconds
 
     plan = one_sample_run(_measure, dets, sample_name=sample_name,
                           scan_name="blade_coating_drying", geometry=geometry,
-                          md=md, baseline=baseline)
+                          md=md, baseline=baseline, reads=reads)
     if atten_in is not None:
         plan = ensure_in_wrapper(plan, atten_in)
     return (yield from plan)

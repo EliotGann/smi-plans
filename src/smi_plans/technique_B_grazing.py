@@ -199,16 +199,17 @@ def giwaxs_bar_arc_economy(samples, *, align, align_angle=0.1, waxs_arc=(0, 20),
 
     dets = dets or _arc_dets()
 
+    point_reads = [energy, waxs, xbpm2, xbpm3]                 # noqa: F821
+
     # The per-(sample, arc) measurement: loop that sample's incident angles at this arc value.
     def _point(sample, arc_value):
         th0 = th0_by_name[sample.name]
         incident_angle = Signal(name="incident_angle", value=float(th0))  # noqa: F821
         angles = sample.incident_angles or list(default_incident_angles)
-        reads = [energy, waxs, xbpm2, xbpm3]                   # noqa: F821
         for ai in angles:
             yield from bps.mv(th_axis, th0 + ai)
             yield from bps.mv(incident_angle, float(ai))
-            yield from bps.trigger_and_read(dedup_readables(list(dets) + reads + [incident_angle]))
+            yield from bps.trigger_and_read(dedup_readables(list(dets) + point_reads + [incident_angle]))
         yield from bps.mv(th_axis, th0)
 
     yield from det_exposure_time(t, t)                                    # noqa: F821
@@ -218,7 +219,7 @@ def giwaxs_bar_arc_economy(samples, *, align, align_angle=0.1, waxs_arc=(0, 20),
         yield from multi_sample_run(
             samples, slow_axis=waxs.arc, slow_positions=list(waxs_arc),    # noqa: F821
             point=_point, dets=dets, scan_name="giwaxs_arc_economy",
-            geometry="reflection", md=md, settle=1.0)
+            geometry="reflection", md=md, settle=1.0, reads=point_reads)
 
     plan = ensure_in_wrapper(_go(), atten_in or default_atten_in)
     return (yield from plan)

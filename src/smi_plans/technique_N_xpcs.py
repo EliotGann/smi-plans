@@ -211,7 +211,7 @@ def xpcs_burst_run(name, *, frame_time=0.01, n_frames=1000, period=None, dets=No
 
     plan = one_sample_run(_measure, dets, sample_name=sample_name,
                           scan_name="xpcs_burst", geometry=geometry,
-                          md=md, baseline=base)
+                          md=md, baseline=base, reads=reads)
 
     # Re-seek the beam right before the burst if I0 is low (so the burst lands on beam).
     if flux_signal is not None and flux_threshold is not None:

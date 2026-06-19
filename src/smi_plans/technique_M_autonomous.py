@@ -176,7 +176,7 @@ def measure_for_agent(params, *, dets=None, reads=None, apply_params=None, t=1.0
 
     return (yield from one_sample_run(
         _measure, dets, sample_name=sample_name, scan_name=scan_name,
-        geometry=geometry, md=run_md, baseline=base))
+        geometry=geometry, md=run_md, baseline=base, reads=reads))
 
 
 # ---------------------------------------------------------------------------

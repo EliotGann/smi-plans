@@ -243,7 +243,7 @@ def xrr_run(name, angles, *, t=1.0, dets=None, reads=None, th_axis=None, th0=0.0
         yield from bps.mv(th_axis, th0)                            # return to aligned zero
 
     plan = one_sample_run(_measure, dets, sample_name=sample_name, scan_name="xrr",
-                          geometry=geometry, md=md, baseline=baseline)
+                          geometry=geometry, md=md, baseline=baseline, reads=reads)
     if atten_in is not None:
         plan = ensure_in_wrapper(plan, atten_in)
 
@@ -310,7 +310,7 @@ def xrr_resonant_run(name, angles, *, edge_energy, energies=None, t=1.0, dets=No
         yield from bps.mv(th_axis, th0)
 
     plan = one_sample_run(_measure, dets, sample_name=sample_name, scan_name="xrr_resonant",
-                          geometry="reflection", md=md, baseline=baseline)
+                          geometry="reflection", md=md, baseline=baseline, reads=reads)
     if atten_in is not None:
         plan = ensure_in_wrapper(plan, atten_in)
 
@@ -386,7 +386,7 @@ def xrr_liquid_run(name, angles, *, piezo_y_origin, bdm_th_origin, bdm_sample_di
 
     return (yield from one_sample_run(_measure, dets, sample_name=sample_name,
                                       scan_name="xrr_liquid_bdm", geometry="reflection",
-                                      md=md, baseline=baseline))
+                                      md=md, baseline=baseline, reads=reads))
 
 
 # ---------------------------------------------------------------------------

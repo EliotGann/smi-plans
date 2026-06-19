@@ -380,7 +380,7 @@ def acquire(name, dets, axes, *, reads=None, setup=None, align=None, geometry=No
     run_md = merge_md(md, {"user_hints": dict(user_hints)} if user_hints else {})
     return (yield from one_sample_run(
         _body, dets, sample_name=sample_name, scan_name=scan_name,
-        geometry=geometry, md=run_md, baseline=baseline))
+        geometry=geometry, md=run_md, baseline=baseline, reads=all_reads))
 
 
 def acquire_bar(samples, dets, axes_for, *, reads=None, setup_for=None, align_for=None,

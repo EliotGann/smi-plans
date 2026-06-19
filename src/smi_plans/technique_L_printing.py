@@ -267,7 +267,7 @@ def printer_triggered_run(name, *, n_events=None, until_stopped=False, t=1.0, de
 
     plan = one_sample_run(_measure, dets, sample_name=sample_name,
                           scan_name="printer_monitoring_run", geometry=geometry,
-                          md=md, baseline=baseline)
+                          md=md, baseline=baseline, reads=reads)
 
     # Always: clear the trigger bit and return the beam off the filament, even on error/abort.
     def _cleanup():
@@ -345,7 +345,7 @@ def print_crystallization_followup_run(name, *, duration_s=1800, waxs_arc=(0, 13
 
     return (yield from one_sample_run(_measure, dets, sample_name=sample_name,
                                       scan_name="print_crystallization_followup",
-                                      geometry=geometry, md=md, baseline=baseline))
+                                      geometry=geometry, md=md, baseline=baseline, reads=reads))
 
 
 # ---------------------------------------------------------------------------
