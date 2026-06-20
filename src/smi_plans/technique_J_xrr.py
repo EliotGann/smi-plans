@@ -60,6 +60,7 @@ axis) on error.
 
 from ._samples import SampleList
 from ._core import (one_sample_run, goto_sample, fname, merge_md, dedup_readables)
+from ._compose import move_energy_fb
 from ._preprocessors import (ensure_in_wrapper, cleanup_wrapper)
 
 try:
@@ -300,8 +301,9 @@ def xrr_resonant_run(name, angles, *, edge_energy, energies=None, t=1.0, dets=No
 
     def _measure():
         for e in e_list:                                           # energy OUTER (slow optic)
-            yield from bps.mv(energy, e)                           # noqa: F821
-            yield from bps.sleep(settle)
+            # Reliable SMI energy move: feedback off -> move (twice) -> settle -> feedback on
+            # -> equilibrate (see _compose.move_energy_fb).
+            yield from move_energy_fb(e, settle=settle)            # noqa: F821
             for ai in angles:
                 yield from xrr_point(th_axis, th0 + ai, dets, reads, incident_angle,
                                      settle=settle, atten_ladder=atten_ladder,

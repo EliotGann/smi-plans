@@ -71,6 +71,7 @@ __all__ = [
     "nest_axes",
     "acquire",
     "acquire_bar",
+    "move_energy_fb",
     "energy_axis",
     "temperature_axis",
     "incidence_axis",
@@ -418,23 +419,111 @@ def acquire_bar(samples, dets, axes_for, *, reads=None, setup_for=None, align_fo
 # ===========================================================================
 # Ready-made axis constructors (the common concerns)
 # ===========================================================================
-def energy_axis(energies, *, settle=2.0, reverse_alternate=False, flux_signal=None,
+def move_energy_fb(target, *, max_step=50.0, settle=2.0, fb_settle=5.0, double_set=True):
+    """Plan: a reliable DCM energy move with explicit BPM-feedback handling, *stepped*.
+
+    On SMI the large-move ``energy`` path is unreliable while the DCM pitch/roll BPM feedback is
+    running, and a move frequently has to be commanded **twice** to actually land.  Large jumps
+    are also unreliable, so this plan walks to ``target`` in increments of at most ``max_step``
+    eV (default 50).  At **every** step it applies the sequence that is observed to work:
+
+    1. turn DCM pitch+roll feedback **OFF** (write ``"1"`` to the disable signals),
+    2. ``mv(energy, step_target)``,
+    3. ``sleep(settle)`` (let the optics settle, feedback still off),
+    4. ``mv(energy, step_target)`` **again** (the second command that makes it land) -- if
+       ``double_set``,
+    5. turn feedback **ON** (write ``"0"``),
+    6. ``sleep(fb_settle)`` so the BPM PID loop re-equilibrates before the next step / measuring.
+
+    We hold feedback off across each step and re-assert it ourselves rather than relying on
+    ``Energy.set`` (which toggles feedback internally on each ``mv``); this keeps the feedback
+    timing deterministic so the post-move dwell actually covers PID settling.
+
+    The current energy is read (``bps.rd(energy)``) to decide the number of steps, so a small
+    move (<= ``max_step``) is a single step and a large move is broken up automatically.  This is
+    the single energy-move primitive: :func:`energy_axis` and the technique plans call it for
+    each grid point, and the intra-point stepping here guarantees no >``max_step`` jump even
+    between two adjacent (coarse) grid points.
+
+    Parameters
+    ----------
+    target : float
+        Photon energy to move to (eV).
+    max_step : float
+        Largest single energy increment (eV, default 50).  Moves larger than this are split
+        into equal sub-steps each <= ``max_step``.  Set to ``None``/``0`` to move in one jump.
+    settle : float
+        Dwell (s) after each move, feedback OFF (default 2).
+    fb_settle : float
+        Dwell (s) after re-enabling feedback at each step, for the BPM PID to equilibrate
+        (default 5).
+    double_set : bool
+        If True (default), command each (sub-)move twice (the second ``mv`` reliably lands).
+    """
+    pitch = energy.pitch_feedback_disabled                        # noqa: F821
+    roll = energy.roll_feedback_disabled                          # noqa: F821
+    target = float(target)
+
+    # Build the list of step targets from the *current* energy so any move > max_step is split.
+    if max_step and max_step > 0:
+        start = float((yield from bps.rd(energy)))               # noqa: F821 (current energy, eV)
+        n = int(np.ceil(abs(target - start) / float(max_step)))  # noqa: F821
+        if n <= 1:
+            steps = [target]
+        else:
+            steps = list(np.linspace(start, target, n + 1))[1:]  # noqa: F821 (drop the start point)
+            steps[-1] = target                                   # land exactly on target
+    else:
+        steps = [target]
+
+    for step_target in steps:
+        step_target = float(step_target)
+        yield from bps.mv(pitch, "1", roll, "1")                 # feedback OFF
+        yield from bps.mv(energy, step_target)                   # noqa: F821
+        yield from bps.sleep(settle)
+        if double_set:
+            yield from bps.mv(energy, step_target)              # noqa: F821 (second, landing, command)
+        yield from bps.mv(pitch, "0", roll, "0")                 # feedback ON
+        yield from bps.sleep(fb_settle)                          # let the BPM PID equilibrate
+
+
+def energy_axis(energies, *, max_step=50.0, settle=2.0, fb_settle=5.0, double_set=True,
+                reverse_alternate=False, flux_signal=None,
                 flux_threshold=None, max_reseek=3, record_name="energy_set"):
     """A DCM energy scan axis.  Records energy via a Signal so ``{energy_set}`` is a token.
 
     The DCM ``energy`` device itself is also typically in ``reads`` (giving ``{energy_energy}``);
     this axis additionally records the *commanded* setpoint and can re-seek the beam.
 
+    Each grid point moves energy via :func:`move_energy_fb`: DCM pitch/roll BPM feedback is
+    turned OFF, the move is commanded (twice, by default -- the SMI energy move is unreliable
+    with feedback on and frequently has to be set twice), it settles, then feedback is turned
+    back ON and the PID is given ``fb_settle`` seconds to equilibrate.  Any jump larger than
+    ``max_step`` eV (e.g. between two coarse grid points) is walked in <= ``max_step`` sub-steps,
+    each with that full feedback sequence.
+
     Parameters
     ----------
     energies : sequence
         Energies (eV), in visiting order (e.g. up, or up+down -- just concatenate).
+    max_step : float
+        Largest single energy increment (eV, default 50); larger moves are stepped.  ``None``/0
+        moves in one jump.
     settle : float
-        Sleep after each energy move.
+        Dwell (s) after each energy move, with feedback OFF (default 2).
+    fb_settle : float
+        Extra dwell (s) after re-enabling feedback at each step, for the BPM PID loop to
+        equilibrate (default 5).
+    double_set : bool
+        If True (default), command each energy move twice (the second is what reliably lands).
     flux_signal, flux_threshold : optional
         If both given, re-seek (re-command energy + wait) when I0 drops below threshold.
     """
     sig = Signal(name=record_name, value=0.0)                     # noqa: F821
+
+    def _move(value):
+        yield from move_energy_fb(value, max_step=max_step, settle=settle,
+                                  fb_settle=fb_settle, double_set=double_set)
 
     def _per_point():
         if flux_signal is not None and flux_threshold is not None:
@@ -443,15 +532,16 @@ def energy_axis(energies, *, settle=2.0, reverse_alternate=False, flux_signal=No
             flux = yield from bps.rd(flux_signal)
             while flux < flux_threshold and tries < max_reseek:
                 target = yield from bps.rd(energy)               # noqa: F821 (current energy)
-                yield from bps.mv(energy, target)                # noqa: F821 (re-seek)
-                yield from bps.sleep(settle)
+                yield from move_energy_fb(target, max_step=max_step, settle=settle,
+                                          fb_settle=fb_settle, double_set=double_set)  # re-seek
                 flux = yield from bps.rd(flux_signal)
                 tries += 1
         else:
             yield from bps.null()
 
-    return ScanAxis("energy", energies, device=energy,           # noqa: F821
-                    record=sig, settle=settle, per_point=_per_point,
+    return ScanAxis("energy", energies, move=_move,              # reliable feedback-aware move
+                    record=sig, settle=0.0,                      # move_energy_fb already dwells
+                    per_point=_per_point,
                     reads=[energy],                              # noqa: F821 (gives {energy_energy})
                     speed=SPEED_MEDIUM, reverse_alternate=reverse_alternate)
 
