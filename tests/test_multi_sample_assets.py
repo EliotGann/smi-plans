@@ -191,3 +191,45 @@ def test_multi_sample_run_accepts_detector_callable(sim):
     assert len(datums) == 2
     _assert_events_reference_resources_in_same_run(result, key="high_image")
     _assert_events_reference_resources_in_same_run(result, key="low_image")
+
+
+def test_multi_sample_run_templated_sample_name_and_named_streams(sim):
+    """name_tokens -> the start doc's sample_name is templated (so the file-naming workflow can fill
+    the arc/angle), and per-(slow-position) named streams carry the token data key.
+
+    This is the fix for the arc-economy naming gap: without name_tokens the bare sample name is used
+    and the filename loses {waxs_arc}/{incident_angle}.
+    """
+    core = _core_with_sim_messages(sim)
+    from smi_plans import SampleList
+
+    samples = SampleList.from_columns(names=["a", "b"])
+    det = ExternalAssetDetector(name="adet")
+    angle = sim.Signal(name="incident_angle", value=0.0)   # the {incident_angle} token source
+
+    def point(sample, slow_value):
+        # record the token + write to a per-arc stream named like the real arc-economy path
+        stream = "arc{:g}".format(slow_value)
+        yield from core.bps.mv(angle, 0.1)
+        yield from core.bps.trigger_and_read([det, angle], name=stream)
+
+    result = sim.run(core.multi_sample_run(
+        samples, sim.waxs.arc, [20, 0], point,
+        dets=[det], reads=[], scan_name="arc_econ", goto=_noop_goto,
+        name_tokens=["ai{incident_angle}"]))
+
+    # every start doc carries the TEMPLATED sample_name (not the bare name)
+    starts = [doc for name, doc in result.docs if name == "start"]
+    assert len(starts) == 2
+    for s in starts:
+        assert "{incident_angle}" in s["sample_name"], s["sample_name"]
+        assert s["sample_name"].startswith(("a_", "b_"))
+
+    # the named per-arc streams exist and carry the token key (so the linker can fill {incident_angle})
+    stream_names = {doc.get("name") for n, doc in result.docs if n == "descriptor"}
+    assert {"arc20", "arc0"} <= stream_names
+    keys = set()
+    for n, doc in result.docs:
+        if n == "event":
+            keys |= set(doc.get("data", {}).keys())
+    assert "incident_angle" in keys

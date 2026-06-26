@@ -244,7 +244,11 @@ def giwaxs_bar_arc_economy(samples, *, align, align_angle=0.1, waxs_arc=(0, 20),
         yield from multi_sample_run(
             samples, slow_axis=waxs.arc, slow_positions=list(waxs_arc),    # noqa: F821
             point=_point, dets=_point_dets, scan_name="giwaxs_arc_economy",
-            geometry="reflection", md=md, settle=1.0, reads=point_reads)
+            geometry="reflection", md=md, settle=1.0, reads=point_reads,
+            # Templated sample_name so each frame's filename carries the arc + incident angle
+            # (the arc-stream events record waxs_arc/incident_angle/xbpm2_sumX). Without this the
+            # bare sample name is used and the arc/angle are lost in the filename.
+            name_tokens=["ai{incident_angle}", "wa{waxs_arc}", "bpm{xbpm2_sumX}"])
 
     plan = ensure_in_wrapper(_go(), atten_in or default_atten_in)
     return (yield from plan)

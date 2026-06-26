@@ -455,7 +455,7 @@ def _resolve_point_dets(dets, sample, slow_value):
 
 def multi_sample_run(samples, slow_axis, slow_positions, point, *,
                      dets, scan_name, geometry=None, md=None,
-                     goto=None, settle=0.0, reads=None):
+                     goto=None, settle=0.0, reads=None, name_tokens=None):
     """Open one run per sample, sweep a slow axis ONCE, and record every sample at each step.
 
     This is the sanctioned form of "multiple open runs at once": it minimizes travel of a
@@ -527,6 +527,10 @@ def multi_sample_run(samples, slow_axis, slow_positions, point, *,
                 {"geometry": geometry} if geometry else {},
                 md,
                 s.base_md(),
+                # A templated sample_name (filled per frame from event data keys by the file-naming
+                # workflow) -- so arc-economy filenames carry {waxs_arc}/{incident_angle}/etc.
+                # Without name_tokens the bare base_md sample_name (s.name) is used.
+                ({"sample_name": fname(s.name, *name_tokens)} if name_tokens else {}),
             )
             yield from bpp.set_run_key_wrapper(bps.open_run(run_md), key)
             open_keys.add(key)
@@ -561,7 +565,7 @@ def multi_sample_run(samples, slow_axis, slow_positions, point, *,
 
 def multi_sample_run_split(samples, slow_axis, slow_positions, point, *,
                            dets, scan_name, geometry=None, md=None,
-                           goto=None, settle=0.0, reads=None):
+                           goto=None, settle=0.0, reads=None, name_tokens=None):
     """One run per (sample, slow-position), with the slow axis still outermost.
 
     This is the conservative fallback for hardware / callbacks that do not tolerate several
@@ -586,6 +590,7 @@ def multi_sample_run_split(samples, slow_axis, slow_positions, point, *,
             sample.base_md(),
             {"slow_axis": getattr(slow_axis, "name", None),
              "slow_position": slow_value},
+            ({"sample_name": fname(sample.name, *name_tokens)} if name_tokens else {}),
         )
 
         @bpp.stage_decorator(_stage_devices_for_read(point_dets, reads))
