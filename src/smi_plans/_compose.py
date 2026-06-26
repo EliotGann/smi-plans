@@ -730,32 +730,88 @@ def motor_axis(name, device, values, *, settle=0.0, record=True, speed=SPEED_FAS
                     speed=speed, reverse_alternate=reverse_alternate)
 
 
-def spatial_grid_axes(*, x_motor=None, x=None, y_motor=None, y=None, snake=True,
-                      record=True, dose=False):
+def _grid_axis(label, motor, positions, *, center=None, record_relative=True,
+               record=True, speed=SPEED_FAST, reverse_alternate=False, role=None):
+    """One spatial-grid dimension.
+
+    Default (``record_relative`` + a ``center``): the axis **values are the relative offsets**
+    ``position - center``; ``_move`` drives the motor to the absolute ``center + offset`` (so the
+    motor still records its absolute ``<motor>_<attr>`` key, e.g. ``piezo_x``) AND a
+    ``Signal(name=label)`` records the *relative* offset -- so the filename token ``{x}``/``{y}``
+    resolves to a meaningful relative value (the ``incidence_axis``/``{incident_angle}`` pattern).
+
+    Without a ``center`` (or ``record_relative=False``): falls back to the plain absolute-position
+    axis whose recorded key is ``<motor>_<attr>`` (token ``{piezo_x}``) -- backward compatible.
+    """
+    if center is not None and record_relative:
+        offsets = [float(p) - float(center) for p in positions]
+        sig = Signal(name=label, value=0.0)                       # noqa: F821 (token {x}/{y})
+        c = float(center)
+
+        def _move(off, _c=c):
+            yield from bps.mv(motor, _c + off)                    # absolute move -> records <motor>_*
+
+        return ScanAxis(label, offsets, move=_move, record=sig,
+                        reads=([motor] if record else []),        # also record absolute <motor>_*
+                        speed=speed, reverse_alternate=reverse_alternate)
+
+    # Absolute mode: token is {<motor>_<attr>} (e.g. {piezo_x}); no relative Signal.
+    return motor_axis(label, motor, positions, record=record, speed=speed,
+                      reverse_alternate=reverse_alternate)
+
+
+def spatial_grid_axes(*, x_motor=None, x=None, y_motor=None, y=None, center=None,
+                      record_relative=True, snake=True, record=True, dose=False, role=None):
     """Build 1-D or 2-D spatial-sampling axes (a single spot, a line, or a grid).
 
     Returns a LIST of axes (0, 1, or 2) you splice into your axis stack -- usually innermost
     (fast piezo).  ``x``/``y`` are the absolute positions to visit; pass just one for a line,
     both for a grid, neither for a single spot.
 
+    Filename tokens
+    ---------------
+    * **With a ``center``** (recommended; ``record_relative`` default True): each axis records a
+      ``Signal(name="x"/"y")`` holding the **relative offset** from ``center``, so ``{x}``/``{y}``
+      are the canonical, meaningful filename tokens.  The motor's absolute position is still
+      recorded too (``{piezo_x}``/``{piezo_y}``) for provenance.
+    * **Without a ``center``**: the axes record only the absolute motor position, so the token is
+      ``{piezo_x}``/``{piezo_y}`` (NOT ``{x}``/``{y}`` -- ``{x}`` would have no recorded key and the
+      file-naming step would ``KeyError``).  This is the backward-compatible behavior.
+
     Parameters
     ----------
     x_motor, y_motor : positioners (e.g. piezo.x, piezo.y)
     x, y : sequences of absolute positions
+    center : float or (cx, cy), optional
+        Grid center.  If given, ``{x}``/``{y}`` record the relative offset from it.  A scalar
+        applies to both axes; a 2-tuple is ``(cx, cy)``.
+    record_relative : bool
+        When a ``center`` is given, record the relative-offset Signal (default True).  False forces
+        the absolute-key (``{piezo_x}``) behavior even with a center.
     snake : bool
         Snake the inner (y) axis to avoid backtracking.
     record : bool
-        Record the motor positions in the stream.
+        Record the (absolute) motor positions in the stream.
     dose : bool
         Mark these as the dose-walk axes (purely informational here; the fresh-spot behavior
         is better applied via the ``_preprocessors.fresh_spot_wrapper`` at the run level).
+    role : str, optional
+        Advisory tag (e.g. ``"spatial"``) for GUI/spec round-tripping.
     """
+    if isinstance(center, (tuple, list)):
+        cx, cy = float(center[0]), float(center[1])
+    elif center is not None:
+        cx = cy = float(center)
+    else:
+        cx = cy = None
+
     axes = []
     if x_motor is not None and x is not None:
-        axes.append(motor_axis("x", x_motor, x, record=record, speed=SPEED_FAST))
+        axes.append(_grid_axis("x", x_motor, x, center=cx, record_relative=record_relative,
+                               record=record, speed=SPEED_FAST, role=role))
     if y_motor is not None and y is not None:
-        axes.append(motor_axis("y", y_motor, y, record=record, speed=SPEED_FAST,
-                               reverse_alternate=snake))
+        axes.append(_grid_axis("y", y_motor, y, center=cy, record_relative=record_relative,
+                               record=record, speed=SPEED_FAST, reverse_alternate=snake, role=role))
     return axes
 
 

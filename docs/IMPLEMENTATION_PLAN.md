@@ -126,37 +126,32 @@ Every caller/passer of the removed params, found in the audit:
 
 ---
 
-## Workstream 3 — `spatial_grid_axes` records `{x}`/`{y}` Signals (relative offsets)
+## Workstream 3 — `spatial_grid_axes` records `{x}`/`{y}` Signals (relative offsets)  ✅ DONE
 **Goal:** make `{x}`/`{y}` valid tokens by recording a relative-offset `Signal(name="x"/"y")` — the
 `incidence_axis`/`{incident_angle}` pattern — so the grid is filename-templatable with a meaningful
 relative value. Promotes the field-proven `bar_plans._grid_axes_named` prototype into the backend.
 
-### 3a. API — `src/smi_plans/_compose.py:spatial_grid_axes`
-- **DECIDED (cross-cutting):** `{x}`/`{y}` (relative-offset Signals) are the **canonical** spatial
-  filename tokens. `spatial_grid_axes` records a `Signal(name="x"/"y")` = relative offset by default;
-  the GUI + legacy advice teach `{x}`/`{y}`. (Absolute `{piezo_x}` remains available but secondary.)
-- New signature recording relative offsets and (per SAMPLE_SYSTEM_PLAN §7.2/§10.4) gaining role tags:
+### 3a. API — `src/smi_plans/_compose.py:spatial_grid_axes`  ✅ DONE
+- Implemented as decided: `{x}`/`{y}` (relative-offset Signals) are canonical. Signature now:
   ```python
-  def spatial_grid_axes(*, x_motor=None, x=None, y_motor=None, y=None,
-                        center=None, snake=True, record=True,
-                        record_relative=True, role=None):
+  spatial_grid_axes(*, x_motor=None, x=None, y_motor=None, y=None, center=None,
+                    record_relative=True, snake=True, record=True, dose=False, role=None)
   ```
-  - `record_relative=True` (default) with a `center` (or per-axis center): each axis moves the
-    absolute motor (still recorded as `piezo_x`/`piezo_y`) AND records `Signal(name="x"/"y")` =
-    relative offset (`value - center`). Tokens `{x}`/`{y}` resolve — **the canonical path**.
-  - Absolute `{piezo_x}` mode stays available (`record_relative=False`) for callers that want it;
-    document which token each mode yields. The GUI defaults to `{x}`/`{y}`.
-  - Add `role="spatial_x"/"spatial_y"` tags if/when the spec needs them (coordinate with GUI plan).
-- Reconcile with the **spec field names**: `build_axes_from_spec`/`_qserver` use `x`/`y`/`snake`
-  (lists). Decide whether the GUI's `x_step`/`x_n` shorthand is supported here or only in the spec
-  bridge (see DOC plan — there is an existing GUI-vs-bridge field mismatch to fix regardless). [This
-  sub-point is a DOC/spec reconciliation, NOT a token decision — still open, see ROADMAP.]
+  - With a `center` (scalar or `(cx, cy)`) and `record_relative=True` (default): each dim's axis
+    `values` become the relative offsets; `_move` drives the motor to `center + offset` (so absolute
+    `piezo_x`/`piezo_y` is still recorded) AND a `Signal(name="x"/"y")` records the offset — `{x}`/
+    `{y}` resolve. (Internal `_grid_axis` helper.)
+  - No `center` (or `record_relative=False`): backward-compatible absolute mode → token `{piezo_x}`;
+    a bare `{x}` then correctly fails the WS2 validator.
+  - `role` accepted (advisory) for GUI/spec round-tripping.
+- **STILL OPEN (DOC, not code):** the GUI `x_step`/`x_n` vs bridge `x`/`y`/`snake` field-name
+  reconciliation — handled in DOC_CORRECTIONS_PLAN, not here.
 
-### 3b. Tests
-- Sim: a grid built via `spatial_grid_axes(..., center=..., record_relative=True)` emits an `x`/`y`
-  data key; assert `{x}`/`{y}` resolve in the templated name (ties to Workstream 2's validator).
-- Sim: snake/`reverse_alternate` still works; absolute `{piezo_x}` mode still works.
-- **Acceptance:** `bar_plans._grid_axes_named` can be deleted in favor of the backend (Workstream 6).
+### 3b. Tests  ✅ DONE (`tests/test_spatial_grid.py`, 4 tests)
+- Centered grid records both `x`/`y` (relative) and `piezo_x`/`piezo_y` (absolute); `{x}`/`{y}` resolve.
+- Recorded `x` values are the offsets (`-100, 0, +100`), not absolutes.
+- No-center → absolute mode (`piezo_x` key, no bare `x`); `{x}` then rejected by the WS2 validator.
+- **Acceptance:** met; full suite 104 passed. `bar_plans._grid_axes_named` can be deleted in WS6.
 
 ---
 
