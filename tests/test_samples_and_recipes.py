@@ -119,3 +119,77 @@ def test_recipe_build_axes_from_spec(sim, inject):
                                   reads=[sim.energy, sim.waxs], check_order=False))
     sim.assert_one_run(msgs)
     assert sim.primary_events(msgs) == 12
+
+
+# ---------------------------------------------------------------------------
+# GUI bridge: spec shorthands (DOC_CORRECTIONS Part A3/A6 -- the GUI spec fields)
+# ---------------------------------------------------------------------------
+def test_spec_spatial_shorthand_step_n_records_relative_xy(sim, inject):
+    """{"type":"spatial","x_step":30,"x_n":5,"center":[cx,cy]} -> 5 spots, relative {x} recorded."""
+    R = inject("smi_plans.recipes_combined")
+    C = inject("smi_plans._compose")
+    spec = [{"type": "spatial", "x_step": 30, "x_n": 5, "center": [1000, 2000]}]
+    ctx = {"piezo_x": sim.piezo.x, "piezo_y": sim.piezo.y}
+    axes = R.build_axes_from_spec(spec, context=ctx)
+    assert [a.name for a in axes] == ["x"]
+    res = sim.run(C.acquire("S", [sim.pil900KW], axes, reads=[sim.energy],
+                            name_tokens=["x{x}"]))   # {x} must resolve (relative offsets)
+    sim.assert_one_run(res)
+    xs = sorted(d["data"]["x"] for n, d in res.docs if n == "event" and "x" in d.get("data", {}))
+    assert xs == [-60.0, -30.0, 0.0, 30.0, 60.0]     # centered on 1000, step 30, n=5
+    assert sim.primary_events(res) == 5
+
+
+def test_spec_spatial_explicit_xy_lists_still_work(sim, inject):
+    """Explicit x/y position lists are also accepted (with center for {x}/{y})."""
+    R = inject("smi_plans.recipes_combined")
+    C = inject("smi_plans._compose")
+    spec = [{"type": "spatial", "x": [970, 1000, 1030], "center": 1000}]
+    ctx = {"piezo_x": sim.piezo.x, "piezo_y": sim.piezo.y}
+    axes = R.build_axes_from_spec(spec, context=ctx)
+    res = sim.run(C.acquire("S", [sim.pil900KW], axes, reads=[sim.energy], name_tokens=["x{x}"]))
+    sim.assert_one_run(res)
+    xs = sorted(d["data"]["x"] for n, d in res.docs if n == "event" and "x" in d.get("data", {}))
+    assert xs == [-30.0, 0.0, 30.0]
+
+
+def test_spec_spatial_shorthand_without_center_errors(sim, inject):
+    """x_step/x_n with no center can't produce {x} -> clear error at build."""
+    R = inject("smi_plans.recipes_combined")
+    spec = [{"type": "spatial", "x_step": 30, "x_n": 5}]   # no center
+    ctx = {"piezo_x": sim.piezo.x, "piezo_y": sim.piezo.y}
+    with pytest.raises(ValueError):
+        R.build_axes_from_spec(spec, context=ctx)
+
+
+def test_spec_energy_grid_shorthand(sim, inject):
+    """{"type":"energy","grid":{edge,...}} expands to a coarse/fine/coarse energy list."""
+    R = inject("smi_plans.recipes_combined")
+    spec = [{"type": "energy", "grid": {"edge": 2472}}]
+    ctx = {"energy": sim.energy}
+    axes = R.build_axes_from_spec(spec, context=ctx)
+    assert axes[0].name == "energy"
+    vals = list(axes[0].values)
+    assert vals[0] < 2472 < vals[-1] and len(vals) > 10   # pre/near/post around the edge
+
+
+def test_spec_motor_speed_string(sim, inject):
+    """A motor axis speed given as the string 'slow' maps to SPEED_SLOW (GUI convenience)."""
+    R = inject("smi_plans.recipes_combined")
+    C = inject("smi_plans._compose")
+    spec = [{"type": "motor", "name": "arc", "device": "waxs_arc", "values": [0, 20],
+             "speed": "slow"}]
+    ctx = {"waxs_arc": sim.waxs.arc}
+    axes = R.build_axes_from_spec(spec, context=ctx)
+    assert axes[0].speed == C.SPEED_SLOW
+
+
+def test_spec_energy_flux_reseek_threshold(sim, inject):
+    """The GUI 'flux_reseek':{threshold} maps onto the axis flux_threshold."""
+    R = inject("smi_plans.recipes_combined")
+    spec = [{"type": "energy", "values": [2480], "flux_reseek": {"signal": "xbpm2.sumX",
+                                                                 "threshold": 50}}]
+    ctx = {"energy": sim.energy, "flux_signal": sim.xbpm2.sumX}
+    # builds without error and yields an energy axis (the threshold is wired into the axis closure)
+    axes = R.build_axes_from_spec(spec, context=ctx)
+    assert axes[0].name == "energy"

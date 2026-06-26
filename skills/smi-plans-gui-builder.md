@@ -19,6 +19,42 @@ The architecture is deliberately staged so a backend (direct-RE execution, or
 > gate GUI work on a live queue, and do **not** put proposal/project on samples or invent a local
 > proposal source.
 
+> ## ⚠️ Backend changes the GUI must reflect (2026-06, post-beamtime) — READ FIRST
+> These are field-validated backend changes (see `docs/FIELD_LESSONS_BAR_PLANS.md`,
+> `docs/ROADMAP.md`); the examples further down this skill were written before them and are being
+> corrected. Where this block and an older example disagree, **this block wins**.
+>
+> 1. **Redis-first generation (the headline).** The Redis store is the preferred GUI↔profile
+>    channel and is field-proven (no copy-paste). The GUI's *primary* generated call should
+>    **reference stored data by NAME**:
+>    - samples/holders → `load_holder("bar1")` (a `SampleList` from the store), NOT
+>      `SampleList.from_columns(piezo_x=[...], ...)`. The `from_columns` paste path is a *secondary*
+>      one-off/import tool.
+>    - big lists (energies/angles/temperatures/times) → **named lists** by name, e.g.
+>      `energies="Fe_K_XANES"` (resolved via `smi_plans.resolve_list`). The GUI's list-builders
+>      become **editors** for those stored entries — see the new **Lists panel** + `NAMED_LISTS_PLAN.md`.
+> 2. **Energy moves are simpler.** `energy_axis(energies, *, settle=2.0, flux_signal=, flux_threshold=)`
+>    — the `energy` device now manages DCM feedback, IVU gap (flux peak), and harmonic itself. The
+>    params **`max_step` / `fb_settle` / `double_set` were REMOVED** (passing them now raises
+>    `TypeError`). Do NOT emit them. `settle` (post-move dwell) and the flux re-seek stay.
+> 3. **Filename tokens must be real recorded keys.** A `{token}` is filled from the recorded event
+>    keys (`<device>_<attr>`); a bad token now fails at **build time** in `acquire` (a clear
+>    `ValueError`), and would otherwise have crashed the post-run file namer (`KeyError`). Use
+>    `{piezo_x}` not `{x}`, `{energy_energy}` not `{energy}`. See the new **Filename tokens** section
+>    below and `skills/naming-and-filename-tokens.md`.
+> 4. **Spatial grid records relative `{x}`/`{y}`.** `spatial_grid_axes(..., center=(cx,cy))` records
+>    a relative-offset Signal named `x`/`y`, so `{x}`/`{y}` are valid tokens (the absolute
+>    `{piezo_x}`/`{piezo_y}` are also recorded). Without a `center` you only get `{piezo_x}`.
+> 5. **The spec bridge now honors the GUI shorthands.** `recipes_combined.build_axes_from_spec`
+>    accepts: energy `grid:{edge,pre,near,post}` OR `values`; spatial `x_step`/`x_n`(+`center`) OR
+>    explicit `x`/`y` lists; motor `speed:"slow"`/`"medium"`/`"fast"` strings; energy
+>    `flux_reseek:{threshold}`. So the `ExperimentSpec` shown below is now faithfully buildable.
+> 6. **Multi-arc topology is un-blocked.** The `UnresolvableForeignKeyError` is fixed (per-(sample,arc)
+>    detector staging). Default to **one run per (sample, arc)** (`giwaxs_bar`/`transmission_bar` with
+>    `waxs_arc=`); offer **arc-economy** (`giwaxs_bar_arc_economy` / `multi_sample_run`) as an opt-in
+>    "when arc travel dominates" (each arc its own stream; `multi_sample_run_split` is the
+>    no-concurrent-runs fallback).
+
 ## When to use this
 
 - Building, extending, or reviewing the SMI experiment-builder GUI.
@@ -97,21 +133,29 @@ ExperimentSpec = {
   },
 
   "samples": {                           # one run per sample
-    "source": "columns",                 # or "csv" / "inline"
-    "names":   ["s1", "s2"],
-    "piezo_x": [-56000, -45000],
-    "piezo_y": [4000, 4000],
-    "incident_angles": [0.1, 0.2],       # shared, or per-sample
-    # ... -> SampleList.from_columns
+    # PRIMARY (Redis-first): reference a holder by name -> load_holder("bar1").
+    "source": "holder",                  # -> load_holder(holder) from the store
+    "holder": "bar1",
+    # SECONDARY / one-off fallback (no store): paste columns -> SampleList.from_columns
+    #   "source": "columns", "names": ["s1","s2"], "piezo_x": [...], "piezo_y": [...],
+    #   "incident_angles": [0.1, 0.2],
   },
 
   "axes": [                              # scan stack, OUTERMOST FIRST
     {"type": "temperature", "values": [30, 60, 90], "soak": 120, "first_soak": 300},
     {"type": "motor", "name": "arc", "device": "waxs.arc", "values": [0, 20], "speed": "slow"},
     {"type": "incidence", "values": [0.10, 0.20]},   # th0 omitted -> relative/aligned-zero
-    {"type": "energy", "grid": {"edge": 2472, "near": [-2, 2, 0.25], "post": [2, 60, 5]},
-                       "flux_reseek": {"signal": "xbpm2.sumX", "threshold": 50}},
-    {"type": "spatial", "x_step": 30, "x_n": 5},     # 5 fresh spots
+    # energy: a stored-list NAME (preferred), OR a grid, OR an explicit values list.
+    # NOTE: the GENERATED CODE turns "list" into resolve_list("S_K_XANES", kind="energy") (the
+    # store is in the live session); the dry-run bridge (build_axes_from_spec) instead takes
+    # "grid"/"values" (it has no store). The GUI should hold the resolved values for dry-run.
+    {"type": "energy", "list": "S_K_XANES"},
+    #   or: {"type": "energy", "grid": {"edge": 2472, "near": [-2,2,0.25], "post": [2,60,5]}},
+    #   or: {"type": "energy", "values": [2470, 2475, 2480]},
+    #   optional re-seek: "flux_reseek": {"signal": "xbpm2.sumX", "threshold": 50}
+    {"type": "spatial", "x_step": 30, "x_n": 5, "center": [55000, 4000]},  # 5 fresh spots; a
+    #   center -> relative {x}/{y} tokens (use the sample's piezo_x/y; "center" may be [cx,cy] or
+    #   set context['spatial_center']); OMIT center -> absolute {piezo_x}/{piezo_y} only.
     # {"type": "manual", "name": "temp_manual", "prompt": "Dial hot stage to",
     #  "values": [35, 50], "record_name": "temp_manual"}   # manual axis
     # {"type": "time", "n_frames": 20, "period": 10}        # kinetics
@@ -141,6 +185,56 @@ Design notes for the model:
   `from_dicts(...)`.
 - Keep a `"version"` field from day one (forward-compat for the eventual qserver payload).
 
+## The spec axis-type table (authoritative — from `build_axes_from_spec`)
+
+Every `axes[]` entry is `{"type": <name>, ...}`. This is the exact set the bridge
+(`recipes_combined.build_axes_from_spec`) accepts and the fields it reads (so the GUI's editors and
+the dry-run validator agree). **This table is the source of truth**; if an older example below uses a
+different field name, prefer this.
+
+| `type` | backend axis | spec fields (bridge) | context handles |
+|---|---|---|---|
+| `energy` | `energy_axis` | `list` (name, generated code resolves) **or** `grid:{edge,pre,near,post}` **or** `values`; `settle`; `flux_reseek:{threshold}` or `flux_threshold` | `flux_signal` |
+| `temperature` | `temperature_axis` | `values`, `soak`, `first_soak` | `heater` |
+| `incidence` | `incidence_axis` | `values`, `th0` (omit → relative/aligned-zero) | `th_axis`, `th0` |
+| `motor` | `motor_axis` | `name`, `device` (context key), `values`, `record`, `speed` (`"slow"`/`"medium"`/`"fast"` or int) | the named `device` |
+| `spatial` | `spatial_grid_axes` | `x`/`y` (lists) **or** `x_step`+`x_n` / `y_step`+`y_n`; `center` ([cx,cy] or scalar) → relative `{x}`/`{y}`; `record_relative`; `snake` | `piezo_x`, `piezo_y`, `spatial_center` |
+| `potential` | `potential_axis` | `values`, `equilibration` | `set_potential`, `potential_readback` |
+| `rh` | `rh_axis` | `values` | `set_rh`, `live_rh` |
+| `time` | `time_axis` | `n_frames`, `period` | `elapsed_signal` |
+| `manual` | `manual_axis` | `name`, `prompt`, `values`, `record_name` | `manual_signal` |
+
+Order in the list = nesting (outermost first). The GUI ordering guardrail mirrors
+`_compose._check_axis_order` (slow axes — arc/phi/temperature — outermost).
+
+## Filename tokens (every `{token}` must be a REAL recorded data key)
+
+The file writer / symlink workflow fills `{field}` tokens in `sample_name` from the run's recorded
+event keys. **A token with no matching key fails** — at build time now (`acquire` raises a clear
+`ValueError`), and historically as a post-run `KeyError` (this broke real runs: a grid axis named
+`x` records key `piezo_x`, so `{x}` had no key → `KeyError('x')`). The GUI's token hint and codegen
+MUST only offer/emit valid tokens. Authority: `skills/naming-and-filename-tokens.md`.
+
+The rule: a token is one of
+- a **`COMMON_TOKENS`** entry (the beamline naming preprocessor injects these even if not in `reads`):
+  `{energy_energy}`, `{xbpm2_sumX}`, `{xbpm3_sumX}`, `{waxs_arc}`, `{pin_diode_current2_mean_value}`;
+- an **axis `record`-Signal name**: `{incident_angle}` (incidence), `{x}`/`{y}` (spatial **with a
+  center**), `{potential_v}`, `{rh}`, `{frame}`, `{energy_set}`;
+- a **`<device>_<attr>`** key for a device in `reads`/`dets`: `{piezo_x}`, `{piezo_y}`, `{stage_phi}`.
+
+Device → key mapping (the common trap is the left vs right column):
+
+| you move/read | token to use | NOT |
+|---|---|---|
+| `piezo.x` (grid, no center) | `{piezo_x}` | `{x}` |
+| `piezo.x` (grid **with center**) | `{x}` (relative offset) | — |
+| `energy` | `{energy_energy}` | `{energy}` |
+| `waxs` arc | `{waxs_arc}` | `{arc}` |
+| `xbpm2` | `{xbpm2_sumX}` | `{xbpm2}` |
+
+The GUI should **pre-validate** the chosen tokens against the axes/reads (same logic as
+`_compose.validate_name_tokens`) and show the error *before* the user takes the script to beam.
+
 ## The code generator (the deliverable users consume now)
 
 `spec → str` (a runnable script). It should emit code that looks hand-written and idiomatic, so
@@ -157,12 +251,12 @@ from smi_plans._compose import (acquire, acquire_bar, energy_axis, temperature_a
                                 incidence_axis, motor_axis, spatial_grid_axes, manual_step,
                                 SPEED_SLOW, SPEED_MEDIUM, SPEED_FAST)
 from smi_plans._core import saxs_waxs_dets
-from smi_plans import SampleList
+from smi_plans import load_holder, resolve_list      # Redis-first: reference stored data by name
 from smi_plans.technique_C_temperature import linkam_heater
 
-bar = SampleList.from_columns(
-    names=["s1", "s2"], piezo_x=[-56000, -45000], piezo_y=[4000, 4000],
-    incident_angles=[0.1, 0.2], md={"project_name": "311234_Doe"})
+# Samples by HOLDER NAME from the store (Redis-first; no copy-paste of coordinate lists).
+# (Fallback for a genuine one-off: SampleList.from_columns(names=..., piezo_x=..., ...).)
+bar = load_holder("bar1")
 
 dets = saxs_waxs_dets()
 reads = [energy, waxs, xbpm2, xbpm3]
@@ -180,6 +274,7 @@ def setup():
     yield from manual_step("Load the bar; read prep sheet", signals=[thickness])
 
 def axes_for(s):
+    cx, cy = s.runnable_position().piezo_x, s.runnable_position().piezo_y
     return [
         temperature_axis(heater, [30, 60, 90], soak=120, first_soak=300),
         motor_axis("arc", waxs.arc, [0, 20], speed=SPEED_SLOW),
@@ -187,9 +282,13 @@ def axes_for(s):
         # left theta (do NOT pre-read piezo.th.position here -- axes_for runs BEFORE align).
         # The recorded `incident_angle` pseudo-axis is the true relative angle (-> {incident_angle}).
         incidence_axis(piezo.th, None, s.incident_angles or [0.1, 0.2]),
-        energy_axis(np.unique(np.r_[np.arange(2470,2474,0.25), np.arange(2474,2532,5)]),
+        # energies by NAME from the store (resolve_list); or an explicit list. The energy device
+        # owns gap/feedback/harmonic -- no max_step/fb_settle/double_set.
+        energy_axis(resolve_list("S_K_XANES", kind="energy"),
                     flux_signal=xbpm2.sumX, flux_threshold=50),
-        motor_axis("x", piezo.x, [piezo.x.position + i*30 for i in range(5)], speed=SPEED_FAST),
+        # 5 fresh spots; center=(cx,cy) so the filename records relative {x}/{y} offsets.
+        *spatial_grid_axes(x_motor=piezo.x, x=[cx + i*30 for i in range(5)],
+                           center=(cx, cy)),
     ]
 
 det_exposure_time(1.0, 1.0)
@@ -198,14 +297,22 @@ RE(acquire_bar(bar, dets, axes_for, reads=reads,
                align_for=align,                       # PRE-run alignment (opens its own runs)
                setup_for=lambda s: setup(), geometry="reflection",
                scan_name="giwaxs_Tramp_NEXAFS", md={"edge": "S_K"},
+               # tokens must be REAL recorded keys: {incident_angle} (axis), {energy_energy}
+               # (device), {x} (spatial relative offset). acquire validates these at build time.
+               name_tokens=["ai{incident_angle}", "{energy_energy}eV", "x{x}"],
                baseline_for=lambda s: [thickness]))
 # ================================================================================
 ```
 
 Generator requirements:
 - Emit only the imports actually needed (track which builders/presets the spec uses).
-- Emit the `SampleList` from the samples block; choose `acquire` (single sample) vs `acquire_bar`
-  (multiple) vs `multi_sample_run` (if the user opts into arc-economy) based on the spec.
+- Emit the samples from the samples block: **`load_holder("bar1")` when `source:"holder"`** (Redis-
+  first), else `SampleList.from_columns(...)`. Choose `acquire` (single sample) vs `acquire_bar`
+  (multiple, one run per sample — the DEFAULT for a bar) vs `multi_sample_run` /
+  `giwaxs_bar_arc_economy` ONLY if the user explicitly opts into **arc-economy** (multiple runs open
+  at once; use when arc travel dominates). Arc-economy is un-blocked (per-(sample,arc) staging,
+  per-arc streams); `multi_sample_run_split` is the no-concurrent-runs fallback.
+- Resolve a stored-list reference: an axis `"list":"NAME"` emits `resolve_list("NAME", kind=...)`.
 - Render axis order verbatim from the list; render device names as bare identifiers.
 - **The WAXS arc axis is `waxs.arc`, NOT `waxs`.** On the beamline `waxs = pil900KW.motors` (a
   readable container, *not* movable); the settable arc is `waxs.arc`. Emit `motor_axis("arc",
@@ -430,6 +537,17 @@ Organize the UI by the five concerns:
    active pointer (intent). See the **Sample bookmarks** section above and
    `docs/SAMPLE_SYSTEM_PLAN.md`. (An ExperimentSpec's transient `samples` block may also be
    populated *from* a bookmark selection.)
+   - **Positioning contract:** the GUI writes each sample's `nominal`/`refined` `Position`
+     (frame `holder`/`lab`); the plans MOVE from `runnable_position()` (refined else nominal) via
+     `goto_sample`. Field names + frame must match `_samples.Position` / `SAMPLE_SYSTEM_PLAN.md`
+     (`piezo_x/y/z/th`, `stage_x/y/z/theta/chi/phi`). The legacy flat `piezo_x` columns are a
+     fallback only.
+4b. **Lists (named scan inputs):** a panel beside Samples/Holders to browse/edit/add **named lists**
+   by kind — `energy` (edges; the existing edge/energy list-builder becomes this editor),
+   `incidence`, `temperature`, `time` — persisted to the `ListStore` (Redis db=2, prefix
+   `swaxslists`). An axis then references a list **by name** (`{"type":"energy","list":"S_K_XANES"}`
+   → generated `resolve_list("S_K_XANES", kind="energy")`). The GUI holds the materialized values for
+   dry-run. See `docs/NAMED_LISTS_PLAN.md`.
 5. **Scan axes:** an ordered, reorderable list; "add axis" of each type (energy / temperature /
    incidence / motor / spatial / potential / rh / time / **manual**); per-axis params; a live
    **ordering guardrail** indicator (slow axes should be higher). Show the resulting nesting and
@@ -442,9 +560,12 @@ Cross-cutting:
 - **Save / load** the spec as JSON.
 - **Validation gating:** warn (don't block) on guardrail issues; block on hard errors (missing
   required device, unbalanced run in dry-run).
-- Filename-token hint: show which `{tokens}` the chosen axes/reads will make available, so the
-  user understands their filenames (tie to the filename-templating contract in
-  `docs/PACKAGE_OVERVIEW.md`).
+- Filename-token hint + **pre-validation**: show which `{tokens}` the chosen axes/reads make
+  available (from `_core.COMMON_TOKENS` + axis record-Signal names + `<device>_<attr>` of
+  reads/dets), and **validate the chosen name** with the same logic as
+  `_compose.validate_name_tokens` so a bad token (`{x}` without a centered grid, `{energy}` instead
+  of `{energy_energy}`) is caught in the GUI, not at beam. See the **Filename tokens** section above
+  and `skills/naming-and-filename-tokens.md`.
 
 ## Suggested build phases
 

@@ -31,8 +31,25 @@
 
 ---
 
-## Part A — GUI builder skill (`skills/smi-plans-gui-builder.md`)  ★ PRIORITY
-The GUI is the user-facing surface; its doc currently has the most drift. Corrections:
+## Part A — GUI builder skill (`skills/smi-plans-gui-builder.md`)  ★ PRIORITY  ✅ DONE
+The GUI is the user-facing surface; its doc had the most drift. **Done** (so GUI agents can start):
+- A "⚠️ Backend changes the GUI must reflect" block at the top (Redis-first; energy params removed;
+  token rules; spatial `{x}`/`{y}`; bridge honors shorthands; arc-economy un-blocked).
+- Generated-script example rewritten: `load_holder("bar1")` (not `from_columns`), `resolve_list(...)`
+  for energies, `spatial_grid_axes(center=)` for relative `{x}`/`{y}`, valid `name_tokens`, no
+  removed energy params.
+- ExperimentSpec example updated: `samples.source:"holder"` primary, energy `list`/`grid`/`values`,
+  spatial `x_step`/`x_n`+`center`.
+- New sections added: **the authoritative spec axis-type table** (A6, from `build_axes_from_spec`)
+  and **Filename tokens** (A2, the `{x}` vs `{piezo_x}` rule + device→key table + GUI pre-validation).
+- Feature checklist: positioning contract (nominal/refined Position), a **Lists panel** (A0/named
+  lists), arc-economy as opt-in default-one-run-per-(sample,arc), token pre-validation.
+- **BRIDGE CODE also changed** (`recipes_combined.build_axes_from_spec`, so the documented spec is
+  actually buildable + dry-runnable): energy `grid` shorthand → values (pure builder); spatial
+  `x_step`/`x_n`(+`center`/`record_relative`) → centered positions + relative `{x}`/`{y}`; motor
+  `speed:"slow"` string → `SPEED_*`; energy `flux_reseek:{threshold}`. Tests: `test_samples_and_recipes.py`
+  +6 (full suite 136). **DECISIONS resolved:** keep `x_step`/`x_n` shorthand (bridge expands it);
+  GUI defaults to one-run-per-(sample,arc), arc-economy opt-in.
 
 ### A0. Redis-first generation (C6) — the headline reframe
 - **Principle (field-proven):** the Redis sample store is a *great* GUI↔profile channel — no

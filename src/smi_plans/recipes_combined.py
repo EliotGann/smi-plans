@@ -243,6 +243,82 @@ def giwaxs_manual_swap_bar(*, waxs_arc=(0, 20), incident_angles=(0.1,), t=1.0, a
 # ===========================================================================
 # 5. Spec-driven assembly (what a GUI does): build an axis stack from a dict
 # ===========================================================================
+#: Map a spec ``"speed"`` (a friendly string OR an int) to the SPEED_* constant.
+_SPEED_NAMES = {"fast": SPEED_FAST, "medium": SPEED_MEDIUM, "slow": SPEED_SLOW}
+
+
+def _speed_from_spec(value, default=SPEED_FAST):
+    """Accept ``"slow"``/``"medium"``/``"fast"`` or an int; return a SPEED_* constant."""
+    if value is None:
+        return default
+    if isinstance(value, str):
+        key = value.lower()
+        return _SPEED_NAMES[key] if key in _SPEED_NAMES else default
+    return value
+
+
+def _energy_values_from_spec(s):
+    """Energy values from an energy spec: an explicit ``"values"`` list, OR a ``"grid"`` shorthand
+    ``{edge, pre, near, post}`` built with the same coarse/fine/coarse logic as
+    :func:`technique_A_energy_edge.energy_grid` (a pure builder, so this works off-beamline)."""
+    if s.get("values") is not None:
+        return list(s["values"])
+    grid = s.get("grid")
+    if grid is None:
+        raise ValueError("energy axis needs 'values' or a 'grid' {edge, pre, near, post}")
+    from ._lists import _energy_grid_from_spec
+    return _energy_grid_from_spec(grid)
+
+
+def _centered_positions(center, step, n):
+    """``n`` positions spaced ``step``, centered on ``center`` (matches the field grid offsets)."""
+    n = int(n)
+    if n <= 1:
+        return [float(center)]
+    return [float(center) + (i - (n - 1) / 2.0) * float(step) for i in range(n)]
+
+
+def _spatial_axes_from_spec(s, context):
+    """Build the spatial grid axes from a ``{"type":"spatial", ...}`` spec.
+
+    Two equivalent ways to give positions per axis:
+      * **explicit list:** ``"x": [..absolute..]`` (and/or ``"y"``);
+      * **shorthand:** ``"x_step"`` + ``"x_n"`` (and/or ``"y_step"``/``"y_n"``) -> ``x_n`` positions
+        spaced ``x_step``, centered on the axis center.
+
+    ``"center"`` (``[cx, cy]`` or a scalar), else ``context["spatial_center"]``, sets the grid center
+    so the recorded filename tokens are the **relative** ``{x}``/``{y}`` offsets.  With NO center the
+    axes record only the absolute motor position (token ``{piezo_x}``/``{piezo_y}``).
+    """
+    cx = cy = None
+    center = s.get("center", context.get("spatial_center"))
+    if isinstance(center, (list, tuple)):
+        cx, cy = float(center[0]), float(center[1])
+    elif center is not None:
+        cx = cy = float(center)
+
+    # Resolve x positions: explicit list, else step/n shorthand centered on cx.
+    x = s.get("x")
+    if x is None and s.get("x_n"):
+        if cx is None:
+            raise ValueError(
+                "spatial axis x_step/x_n shorthand needs a center: set spec 'center' or "
+                "context['spatial_center'] (the sample center)")
+        x = _centered_positions(cx, s.get("x_step", 0.0), s["x_n"])
+    y = s.get("y")
+    if y is None and s.get("y_n"):
+        if cy is None:
+            raise ValueError("spatial axis y_step/y_n shorthand needs a center")
+        y = _centered_positions(cy, s.get("y_step", 0.0), s["y_n"])
+
+    return spatial_grid_axes(
+        x_motor=context.get("piezo_x"), x=x,
+        y_motor=context.get("piezo_y"), y=y,
+        center=(cx, cy) if (cx is not None and cy is not None) else (cx if cx is not None else cy),
+        record_relative=s.get("record_relative", True),
+        snake=s.get("snake", True))
+
+
 def build_axes_from_spec(spec, *, context):
     """Turn a declarative ``spec`` (e.g. from a GUI / JSON) into an ordered list of ScanAxis.
 
@@ -279,9 +355,11 @@ def build_axes_from_spec(spec, *, context):
     for s in spec:
         kind = s["type"]
         if kind == "energy":
-            out.append(energy_axis(s["values"], settle=s.get("settle", 2.0),
+            reseek = s.get("flux_reseek") or {}
+            out.append(energy_axis(_energy_values_from_spec(s),
+                                   settle=s.get("settle", 2.0),
                                    flux_signal=context.get("flux_signal"),
-                                   flux_threshold=s.get("flux_threshold")))
+                                   flux_threshold=s.get("flux_threshold", reseek.get("threshold"))))
         elif kind == "temperature":
             out.append(temperature_axis(context["heater"], s["values"],
                                         soak=s.get("soak", 60.0),
@@ -294,12 +372,9 @@ def build_axes_from_spec(spec, *, context):
         elif kind == "motor":
             out.append(motor_axis(s.get("name", "motor"), context[s["device"]], s["values"],
                                   record=s.get("record", True),
-                                  speed=s.get("speed", SPEED_FAST)))
+                                  speed=_speed_from_spec(s.get("speed"), SPEED_FAST)))
         elif kind == "spatial":
-            out.extend(spatial_grid_axes(
-                x_motor=context.get("piezo_x"), x=s.get("x"),
-                y_motor=context.get("piezo_y"), y=s.get("y"),
-                snake=s.get("snake", True)))
+            out.extend(_spatial_axes_from_spec(s, context))
         elif kind == "potential":
             out.append(potential_axis(context["set_potential"], s["values"],
                                       equilibration=s.get("equilibration", 5.0),
