@@ -63,6 +63,11 @@ from ._holder import (  # noqa: F401  (pure loader; bluesky lazy in save/clear_a
     clear_aligned,
     sample_center,
 )
+from ._lists import (  # noqa: F401  (pure python; redis imported lazily in from_redis)
+    NamedList,
+    ListStore,
+    resolve_list,
+)
 
 # The device-dependent modules import bluesky lazily; importing the package outside the
 # beamline env should still expose the sample model without exploding.
@@ -93,6 +98,9 @@ __all__ = [
     "save_aligned",
     "clear_aligned",
     "sample_center",
+    "NamedList",
+    "ListStore",
+    "resolve_list",
     "_preprocessors",
     "_core",
     "_compose",

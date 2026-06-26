@@ -151,19 +151,32 @@ sample store so there's one connection story.
   in `SAMPLE_SYSTEM_PLAN` (or a short addition) that db=2 now hosts TWO logical stores
   (`swaxssamples`, `swaxslists`).
 
-## 7. Open questions (human call)
-- **Prefix vs db:** confirmed db=2 + new prefix. Pick prefix string (`swaxslists`?) and Option A vs B
-  in §2.
-- **One library vs per-kind namespaces:** a single `ListStore` with `kind` tags (recommended) vs
-  separate stores per kind. (Recommend one store, `kind`-tagged.)
-- **Name collisions across kinds:** is `"fine"` allowed as both an `incidence` and a `time` list?
-  Recommend names unique **within a kind** (key includes kind), so yes.
-- **Validation/units:** how strict on `units`/ranges (e.g. energy within [2050, 24000] eV)? Start
-  advisory; add per-kind validation later.
-- **Provenance:** record created/edited/by in `md`? Recommend yes (cheap, useful in the GUI).
-- **Materialize-on-save vs on-resolve:** store `values` at save time (GUI computes once) AND keep
-  `spec`, vs materialize lazily. Recommend **store both** (GUI writes `values`; resolver trusts them;
-  `spec` kept for re-edit).
+## 7. Decisions (resolved + implemented in NL-1/NL-2)
+- **Prefix vs db:** ✅ db=2, own prefix **`swaxslists`**, **Option A** (own prefix -> independently
+  browsable/prunable; a sample export never drags lists along).
+- **One library vs per-kind:** ✅ a single `ListStore` with `kind` tags.
+- **Name collisions across kinds:** ✅ names unique **within a kind** (index is `{kind: {name: id}}`);
+  `"fine"` can be both an `incidence` and a `time` list. (Tested.)
+- **Provenance:** ✅ `NamedList.md` carries free metadata (created/edited/by) -- cheap, GUI-useful.
+- **Materialize-on-save vs on-resolve:** ✅ **store both** -- `values` is authoritative when set;
+  `spec` kept for re-edit; `resolve_list`/`resolved_values()` materialize from `spec` only if
+  `values` is absent. The `energy` kind's builder is numerically identical to
+  `technique_A.energy_grid` (verified `allclose`), but pure-Python so the library is CI-testable.
+
+**Still open (not blocking; for later):**
+- **Validation/units:** strictness on `units`/ranges (e.g. energy within [2050, 24000] eV). Currently
+  advisory (`units` stored, not enforced); add per-kind validation later.
+
+## Status
+- **NL-1 (model + `ListStore`)** ✅ DONE — `src/smi_plans/_lists.py` (`NamedList`, `ListStore`,
+  pure spec builders); exported from the package top level; no Redis import at package import.
+- **NL-2 (`resolve_list` + builders)** ✅ DONE — name-or-list seam; energy spec via the pure
+  energy-grid builder (matches `energy_grid`).
+- **NL-3 (plumb into bars)** ⬜ TODO — fold name-or-list into `technique_A/B/C/E` + `_qserver`
+  `*_from_spec` (do alongside WS6 re-thin).
+- **NL-4/NL-5 (GUI Lists panel + session wiring)** ⬜ TODO (DOC plan / GUI).
+- Tests: `tests/test_lists.py` (14, pure dict backend). Full suite 130 passed.
+
 
 ## 8. Acceptance
 - A `NamedList` of each kind round-trips through `ListStore` on a **dict** backend in CI (no Redis).
