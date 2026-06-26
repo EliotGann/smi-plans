@@ -53,6 +53,16 @@ from ._samples import (  # noqa: F401  (pure python, always safe)
     slot_to_position,
 )
 from ._store import SampleStore  # noqa: F401  (pure python; redis imported lazily in from_redis)
+from ._holder import (  # noqa: F401  (pure loader; bluesky lazy in save/clear_aligned)
+    HolderBar,
+    load_holder,
+    get_aligned,
+    is_aligned,
+    needs_alignment,
+    save_aligned,
+    clear_aligned,
+    sample_center,
+)
 
 # The device-dependent modules import bluesky lazily; importing the package outside the
 # beamline env should still expose the sample model without exploding.
@@ -75,6 +85,14 @@ __all__ = [
     "HolderTransform",
     "slot_to_position",
     "SampleStore",
+    "HolderBar",
+    "load_holder",
+    "get_aligned",
+    "is_aligned",
+    "needs_alignment",
+    "save_aligned",
+    "clear_aligned",
+    "sample_center",
     "_preprocessors",
     "_core",
     "_compose",

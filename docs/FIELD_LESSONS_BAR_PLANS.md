@@ -323,6 +323,6 @@ do (or does differently/untested). Each is a backend change item below.
 | One run per (sample, arc) | YES (live; avoided UnresolvableForeignKey) | no | no | §3 safe default |
 | Multi-open-run w/ staging (arc economy) | **YES (beamline-confirmed)** | **YES** (`test_multi_sample_assets.py`) | **YES** (committed `536ec39`, pushed) | §3 DONE |
 | Position-based positioning (nominal/refined) | YES (live) | YES (`test_positioning.py`) | YES (`goto_sample` reads runnable Position) | §4 GUI contract |
-| Redis holder → SampleList bridge | YES (live, `holder_bar.py`) | no | no (missing) | §5 optional, dict-replaceable |
+| Redis holder → SampleList bridge | YES (live, `holder_bar.py`) | YES (`test_holder.py`, dict) | YES (`_holder.py`) | §5 optional, dict-replaceable |
 | Filename token = real recorded key (no KeyError) | YES (live: KeyError('x') hit + fixed user-side) | no | no | §6 fix `spatial_grid_axes` + validate in `acquire`; skill written |
 | Filename token = real recorded key (no KeyError) | YES (live: KeyError('x') hit + fixed user-side) | no | no | §6 fix `spatial_grid_axes` + validate in `acquire`; skill written |

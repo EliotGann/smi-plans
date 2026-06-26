@@ -180,25 +180,31 @@ relative value. Promotes the field-proven `bar_plans._grid_axes_named` prototype
 
 ---
 
-## Workstream 5 — Redis holder→SampleList bridge (OPTIONAL, dict-replaceable)
+## Workstream 5 — Redis holder→SampleList bridge (OPTIONAL, dict-replaceable)  ✅ DONE
 **Goal:** the one genuinely new capability — load a holder's samples from the store and run a `*_bar`
 from a holder name, with alignment persisted. Built on the typed model + `SampleStore`, **not** ad-hoc
 Redis. Promotes `holder_bar.py`.
 
-### 5a. Code — new `src/smi_plans/_holder.py` (loader) + `_core` (move/align helpers)
-- `load_holder(holder_name, *, store) -> SampleList` (store is any `MutableMapping`-backed
-  `SampleStore`; Redis only via `SampleStore.from_redis`, lazy import, `[beamline]` extra).
-- Alignment helpers: `get_aligned`/`save_aligned`/`needs_alignment` round-tripping through
-  `SampleStore.append_alignment`/`update_refined`. `goto_runnable`/`sample_center` (or reuse
-  Workstream 4's helpers).
-- **HARD CONSTRAINTS:** no Redis import at package import; importing/running off-beamline must not
-  require Redis or the secret; using the bridge without a configured backend fails gracefully with a
-  clear message (not an import error).
+### 5a. Code — new `src/smi_plans/_holder.py`  ✅ DONE
+- `load_holder(holder_name, *, store=None, order_by_slot=True, require=True) -> HolderBar`
+  (a `SampleList` subclass carrying `.store`/`.holder`). Resolves the holder by name, orders samples
+  by the holder's declared `sample_ids` then slot. `store=None` opens `SampleStore.from_redis()` (the
+  ONLY Redis touch, lazy). Missing holder → clear `KeyError` listing available names (or empty bar if
+  `require=False`).
+- Pure helpers: `get_aligned`/`is_aligned`/`needs_alignment`/`sample_center` (read `refined`/runnable
+  Position). Plan helpers: `save_aligned`/`clear_aligned` round-trip through
+  `SampleStore.append_alignment`/`update_refined` (bluesky imported lazily inside them). Positioning
+  reuses Workstream 4's `_core.goto_sample`/`position_moves` (no duplication).
+- Exported from the package top level (`from smi_plans import load_holder, ...`).
+- **HARD CONSTRAINTS met:** no Redis import at package import (verified: `redis` not in `sys.modules`
+  after `import smi_plans`); off-beamline import/use needs no Redis/secret; `save_aligned` on a
+  non-`HolderBar` raises a clear `TypeError`.
 
-### 5b. Tests (pure, no hardware/Redis/secret)
-- `test_store.py`-style: round-trip holder→SampleList, alignment get/save, needs_alignment, all
-  against a **dict** backend (the primary tested path).
-- **Acceptance:** runs in CI with no Redis; `redis` not a runtime dependency.
+### 5b. Tests  ✅ DONE (`tests/test_holder.py`, 7 tests, pure dict backend)
+- load+order by slot; missing holder error lists available; `require=False` → empty; `sample_center`;
+  alignment save→persist→reload round-trip (other axes preserved); `save_aligned` needs a HolderBar;
+  no-Redis-import safety.
+- **Acceptance:** met — runs in CI with no Redis; `redis` not a runtime dependency. Full suite 116.
 
 ---
 
