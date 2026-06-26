@@ -208,17 +208,33 @@ Redis. Promotes `holder_bar.py`.
 
 ---
 
-## Workstream 6 — Re-thin the user scripts (after 1–5)
-**Goal:** `bar_plans.py` becomes ~5-line wrappers over `technique_*` bars + the holder bridge; the
-field idioms now live in the backend.
-- Rewrite each `bar_plans.py` plan: `load_holder(...)` → call `technique_A.nexafs_bar` /
-  `technique_B.giwaxs_bar` / `technique_E.transmission_bar`. Energies/arcs/grid/exposure as kwargs
-  (and, once Workstream 7 lands, the list params can be **named lists**, e.g. `energies="Fe_K_XANES"`).
-- Delete `bar_plans._grid_axes_named` (superseded by Workstream 3) and the local
-  `move_energy_step`/`reliable_energy_axis` (superseded by Workstream 1).
-- Reduce `holder_bar.py` to a thin re-export of the backend bridge, or delete it.
-- **Acceptance:** `bar_plans.py` contains intent only (which holder/energies/arcs/exposure), zero
-  operational idioms; a sim run of each rewritten plan produces a well-formed run with correct tokens.
+## Workstream 6 — Re-thin the user scripts (after 1–5)  ✅ DONE (TARGETED re-thin)
+**Goal:** remove the now-duplicated field machinery from `bar_plans.py`/`holder_bar.py` (it lives in
+the backend now), keeping the proven scan **structure**.
+
+**Decision:** TARGETED re-thin (keep structure), not a full swap onto `technique_*` bars — the
+technique bars don't exactly replicate the field-tuned structure (arc-outer one-run-per-(sample,arc),
+arc-aware SAXS drop `ARC_SAXS_BLOCK_DEG`, fresh-spot walk, `{energy_energy}`/`wa{arc}` naming), so a
+full swap risked silently changing how scans run. **NL-3** (name-or-list resolution) is done in the
+user file (per the decision), needing no backend change.
+
+**Done (in the user-scripts repo `/home/xf12id/SWAXS_user_scripts/`, a SEPARATE git repo):**
+- `bar_plans.py`: deleted the local `move_energy_step`/`reliable_energy_axis`/`_energy_now`/
+  `ENERGY_TOL_eV` (→ backend `energy_axis`, gutted in WS1), `_grid_axes_named` (→ backend
+  `spatial_grid_axes(center=...)` which records `{x}`/`{y}`, WS3), `_goto_xz_stage` (→ backend
+  `goto_sample(skip={piezo.y, piezo.th})`, WS4). Imports switched from `holder_bar` to `smi_plans`
+  (`load_holder`/`get_aligned`/`needs_alignment`/`save_aligned`/`sample_center` + `_core.goto_sample`)
+  and `resolve_list`. The 3 plans + their parameters/prints are unchanged; `energies`/
+  `incident_angles` now accept a list OR a stored-list **name** (`resolve_list`).
+- `holder_bar.py`: reduced to a thin **compatibility shim** re-exporting the backend bridge (aliases
+  `load_holder_bar`→`load_holder`, `goto_runnable`→`goto_sample`).
+- **Verified:** both files `py_compile` and **import-resolve** against the new backend (with `src` on
+  the path); all 3 plans present. (Full sim-run of the user plans is gated on deploying the backend +
+  the live devices; the backend pieces they call are each sim-tested in this repo.)
+- **DEPLOYMENT DEPENDENCY (IMPORTANT):** the beamline `terminal` env currently has a STALE installed
+  `smi_plans` (no `load_holder`/`resolve_list`). The re-thinned files **will import-fail until the
+  updated `smi-plans` is deployed** into that env (an env rebuild / install — owned by beamline
+  staff, NOT done here). A header note in `bar_plans.py` states this.
 
 ---
 
