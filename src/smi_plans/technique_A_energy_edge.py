@@ -75,7 +75,7 @@ def energy_grid(edge, pre=(-30, -2, 5.0), near=(-2, 2, 0.25), post=(2, 60, 5.0))
 # One run = one sample, up (+down) energy sweep  -- assembled from energy_axis
 # ---------------------------------------------------------------------------
 def nexafs_run(name, energies, *, t=2.0, dets=None, reads=None, geometry="transmission",
-               updown=True, settle=2.0, fb_settle=5.0, double_set=True,
+               updown=True, settle=2.0,
                dose_motor=None, dose_step=None,
                flux_signal=None, flux_threshold=None, atten_in=None, baseline=None,
                md=None, name_tokens=("{energy_energy}eV", "bpm{xbpm2_sumX}")):
@@ -103,13 +103,8 @@ def nexafs_run(name, energies, *, t=2.0, dets=None, reads=None, geometry="transm
         If True, follow the up-sweep with a reversed down-sweep in the SAME run; an
         ``energy_direction`` Signal is recorded so frames are distinguishable.
     settle : float
-        Dwell (s) after each energy move, with DCM BPM feedback OFF (default 2).
-    fb_settle : float
-        Extra dwell (s) after re-enabling DCM BPM feedback at each step, for the PID loop to
-        equilibrate (default 5).  See :func:`_compose.move_energy_fb`.
-    double_set : bool
-        If True (default), command each energy move twice (the SMI move is unreliable with
-        feedback on and frequently needs the second command to land).
+        Dwell (s) after each energy move (default 2).  The ``energy`` device manages DCM feedback,
+        IVU gap, and harmonic itself -- see :func:`_compose.move_energy_fb`.
     dose_motor, dose_step : optional
         Walk ``dose_motor`` by ``dose_step`` after every frame (fresh spot).
     flux_signal, flux_threshold : optional
@@ -150,10 +145,8 @@ def nexafs_run(name, energies, *, t=2.0, dets=None, reads=None, geometry="transm
     idx = {"i": 0}
 
     def _move(value):
-        # Reliable SMI energy move: feedback off -> move (twice) -> settle -> feedback on ->
-        # equilibrate.  See _compose.move_energy_fb.
-        yield from move_energy_fb(value, settle=settle, fb_settle=fb_settle,
-                                  double_set=double_set)
+        # Plain device energy move (the energy device owns gap/feedback/harmonic).
+        yield from move_energy_fb(value, settle=settle)
 
     def _per_point():
         yield from bps.mv(energy_direction, "up" if idx["i"] < n_up else "down")
@@ -163,14 +156,13 @@ def nexafs_run(name, energies, *, t=2.0, dets=None, reads=None, geometry="transm
             flux = yield from bps.rd(flux_signal)               # read I0 via a message
             while flux < flux_threshold and tries < 3:
                 cur = yield from bps.rd(energy)                 # noqa: F821 (current energy)
-                yield from move_energy_fb(cur, settle=settle, fb_settle=fb_settle,
-                                          double_set=double_set)  # re-seek (same reliable move)
+                yield from move_energy_fb(cur, settle=settle)  # re-seek (re-command + settle)
                 flux = yield from bps.rd(flux_signal)
                 tries += 1
         else:
             yield from bps.null()
 
-    e_axis = ScanAxis("energy", values, move=_move,             # reliable feedback-aware move
+    e_axis = ScanAxis("energy", values, move=_move,             # plain device energy move
                       settle=0.0, per_point=_per_point,         # move_energy_fb already dwells
                       reads=[energy], speed=SPEED_MEDIUM)         # gives {energy_energy}
 

@@ -301,8 +301,8 @@ def xrr_resonant_run(name, angles, *, edge_energy, energies=None, t=1.0, dets=No
 
     def _measure():
         for e in e_list:                                           # energy OUTER (slow optic)
-            # Reliable SMI energy move: feedback off -> move (twice) -> settle -> feedback on
-            # -> equilibrate (see _compose.move_energy_fb).
+            # Plain device energy move (the energy device owns gap/feedback/harmonic); see
+            # _compose.move_energy_fb.
             yield from move_energy_fb(e, settle=settle)            # noqa: F821
             for ai in angles:
                 yield from xrr_point(th_axis, th0 + ai, dets, reads, incident_angle,

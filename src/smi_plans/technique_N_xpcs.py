@@ -264,9 +264,9 @@ def xpcs_resonant_burst_run(name, edge_energy, *, settle=10.0, **kwargs):
     # Wrap the burst's measurement by setting energy first via an apply-like closure: simplest
     # is to set energy before delegating (it is recorded because energy is in reads).
     def _set_energy():
-        # Reliable SMI energy move (feedback off -> move twice -> settle -> feedback on ->
-        # equilibrate); see _compose.move_energy_fb.  `settle` here is the post-feedback dwell.
-        yield from move_energy_fb(edge_energy, fb_settle=settle)  # noqa: F821
+        # Plain device energy move (the energy device owns gap/feedback/harmonic); see
+        # _compose.move_energy_fb.  `settle` is the post-move dwell.
+        yield from move_energy_fb(edge_energy, settle=settle)  # noqa: F821
 
     # Prepend the energy move as a measurement-config step that runs once at run open.
     existing_atten = kwargs.pop("atten_in", None)
