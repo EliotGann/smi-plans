@@ -102,6 +102,16 @@ class _XBPM(Device):
     sumY = Cpt(SynSignal, func=lambda: 1000.0, name="sumY")
 
 
+class _Energy(SynAxis):
+    """Simulated SMI Energy pseudo-positioner surface used by energy_axis.
+
+    The real ``energy`` device exposes DCM pitch/roll feedback-disable signals.  The reliable
+    energy-move plan toggles them around moves, so the sim needs harmless stand-ins.
+    """
+    pitch_feedback_disabled = Cpt(Signal, value="0", name="pitch_feedback_disabled")
+    roll_feedback_disabled = Cpt(Signal, value="0", name="roll_feedback_disabled")
+
+
 class _PinDiode(Device):
     current2 = Cpt(SynSignal, func=lambda: 0.5, name="current2")
     averaging_time = Cpt(Signal, value=1.0, name="averaging_time")
@@ -182,7 +192,7 @@ class SimBeamline:
         # NOTE: the legacy ``prs`` (precision rotation stage) was removed on the live beamline
         # and replaced by the Huber ``stage.phi`` axis.  The sim intentionally does NOT define a
         # ``prs`` global, so any plan still referencing it fails loudly (it should use stage.phi).
-        self.energy = SynAxis(name="energy")
+        self.energy = _Energy(name="energy")
         self.xbpm2 = _XBPM(name="xbpm2")
         self.xbpm3 = _XBPM(name="xbpm3")
         self.pin_diode = _PinDiode(name="pin_diode")

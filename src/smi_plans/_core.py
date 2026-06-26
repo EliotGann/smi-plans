@@ -10,7 +10,10 @@ architecture (see ``templates/_analysis/BEST_PRACTICES_DRAFT.md``):
   a filename templated from *recorded* fields.
 * **Multiple runs open at once** (:func:`multi_sample_run`) -- the run-key interleave that
   lets a slow / in-vacuum axis (``waxs.arc``, ``stage.phi``) move once while every sample's run is
-  open simultaneously.  (Generalized from the "Tom" prototype in ``30-user-Gann.py``.)
+  open simultaneously.  AreaDetector Resources are kept correct by staging detectors inside each
+  run-keyed sample/slow-position point, not once for the whole block.
+* **Split slow-axis runs** (:func:`multi_sample_run_split`) -- the conservative fallback: still
+  move the slow axis outermost, but open one independent run per (sample, slow-position).
 * **Sample positioning** (:func:`goto_sample`) -- expand a :class:`_samples.Sample` into the
   right ``bps.mv`` calls for piezo and/or hexapod.
 * **Detector selection** (:func:`saxs_waxs_dets`) -- the arc-aware SAXS/WAXS choice, plus
@@ -58,6 +61,7 @@ except Exception:  # pragma: no cover - ophyd layout differs / outside beamline 
 __all__ = [
     "one_sample_run",
     "multi_sample_run",
+    "multi_sample_run_split",
     "goto_sample",
     "saxs_waxs_dets",
     "declare_saxs_waxs_streams",
@@ -360,7 +364,7 @@ def one_sample_run(measure, dets, *, sample_name, scan_name, geometry=None,
 
     # Stage detectors AND any triggerable reads that need staging (e.g. pin_diode); skip reads
     # already covered by dets to avoid ophyd RedundantStaging.
-    to_stage = list(dets) + stageable_reads(dets, reads)
+    to_stage = _stage_devices_for_read(dets, reads)
 
     @bpp.stage_decorator(to_stage)
     @bpp.run_decorator(md=run_md)
@@ -376,6 +380,27 @@ def one_sample_run(measure, dets, *, sample_name, scan_name, geometry=None,
 # ---------------------------------------------------------------------------
 # Many runs open at once (slow-axis economy)
 # ---------------------------------------------------------------------------
+def _stage_devices_for_read(dets, reads=None):
+    """Devices that need staging for ``trigger_and_read(dets + reads)``.
+
+    ``dets`` are always staged.  ``reads`` normally are just read-only devices, but some reads
+    (for example ``pin_diode`` / ``QuadEMV33``) are triggerable AreaDetector-style devices and
+    also need stage-before-trigger.  ``stageable_reads`` returns only those extra staged-trigger
+    reads, de-duped against ``dets`` to avoid RedundantStaging.
+    """
+    return list(dets or []) + stageable_reads(dets, reads)
+
+
+def _resolve_point_dets(dets, sample, slow_value):
+    """Return the detector list for one (sample, slow-position) point.
+
+    ``dets`` may be a fixed sequence or a callable ``dets(sample, slow_value)``.  The callable
+    form is useful when detector choice depends on the slow axis, e.g. WAXS arc 0 deg is
+    WAXS-only while arc 20 deg is SAXS+WAXS.
+    """
+    return dets(sample, slow_value) if callable(dets) else dets
+
+
 def multi_sample_run(samples, slow_axis, slow_positions, point, *,
                      dets, scan_name, geometry=None, md=None,
                      goto=None, settle=0.0, reads=None):
@@ -383,9 +408,16 @@ def multi_sample_run(samples, slow_axis, slow_positions, point, *,
 
     This is the sanctioned form of "multiple open runs at once": it minimizes travel of a
     slow / in-vacuum axis (``waxs.arc``, ``stage.phi``) by moving it in the *outer* loop while N
-    per-sample runs are simultaneously open, writing each sample's frame into its own run via
+    per-sample runs are simultaneously open, writing each sample's frames into its own run via
     run keys.  Generalized + cleaned up from the ``30-user-Gann.py`` "Tom" prototype, with a
     ``finalize_wrapper`` so all runs close even on error.
+
+    Detectors are intentionally staged **inside each sample/slow-position point**, not once for
+    the whole block.  Classic ophyd AreaDetector file plugins generate one Resource document per
+    stage and the first run that reads the detector consumes that Resource.  If one detector stage
+    is shared across several simultaneous runs, run 0 receives the Resource and run 1+ emit Events
+    whose Datums point to an unknown Resource.  Per-point staging preserves the required
+    one-stage -> one-run ownership while still moving the slow axis only once per slow position.
 
     Parameters
     ----------
@@ -401,8 +433,10 @@ def multi_sample_run(samples, slow_axis, slow_positions, point, *,
         as needed and end by yielding ``bps.trigger_and_read([...])`` -- but must NOT open or
         close runs.  It runs *inside* that sample's run (the wrapper sets the run key around
         it).
-    dets : list
-        Detectors staged for the whole interleaved acquisition.
+    dets : list or callable(sample, slow_value) -> list
+        Detectors staged for each per-(sample, slow-position) point.  The point may contain many
+        inner events (for example all incident angles for one sample at one WAXS arc), so this is
+        not per-event staging.  Pass a callable when detector choice depends on the slow axis.
     scan_name, geometry, md :
         As in :func:`one_sample_run`; ``md`` is merged per sample with the sample's own md.
     goto : callable(sample) -> plan, optional
@@ -412,16 +446,17 @@ def multi_sample_run(samples, slow_axis, slow_positions, point, *,
         Sleep after each ``slow_axis`` move (let the arc/phi settle).
     reads : list, optional
         The ``reads`` your ``point`` plan passes to ``trigger_and_read`` alongside ``dets``.
-        Any stageable, triggerable read (e.g. ``pin_diode`` / ``QuadEMV33``) is staged for the
-        whole interleaved block too; reads that don't need staging or are already covered by
-        ``dets`` are ignored, so it is safe to always pass.
+        Any stageable, triggerable read (e.g. ``pin_diode`` / ``QuadEMV33``) is staged with each
+        point too; reads that don't need staging or are already covered by ``dets`` are ignored,
+        so it is safe to always pass.
 
     Notes
     -----
     * With multiple runs open, the BestEffortCallback's table is meaningless; configure a
       ``RunRouter`` that builds a fresh per-run callback and disables tables (see README).
-    * ``stage``/``unstage`` of detectors is handled once for the whole block via
-      ``stage_wrapper``.
+    * ``stage``/``unstage`` is handled once per (sample, slow-position) point via
+      ``stage_wrapper`` inside the run key, so AreaDetector Resource/Datum documents are emitted
+      into the same run as the Events that reference them.
     """
     samples = list(samples)
     n = len(samples)
@@ -451,7 +486,11 @@ def multi_sample_run(samples, slow_axis, slow_positions, point, *,
                 yield from bps.sleep(settle)
             for i, s in enumerate(samples):
                 yield from _goto(s)
-                yield from bpp.set_run_key_wrapper(point(s, sv), "run {}".format(i))
+                key = "run {}".format(i)
+                point_dets = _resolve_point_dets(dets, s, sv)
+                staged_point = bpp.stage_wrapper(
+                    point(s, sv), _stage_devices_for_read(point_dets, reads))
+                yield from bpp.set_run_key_wrapper(staged_point, key)
 
         for i in range(n):
             key = "run {}".format(i)
@@ -465,5 +504,49 @@ def multi_sample_run(samples, slow_axis, slow_positions, point, *,
         open_keys.clear()
 
     plan = bpp.finalize_wrapper(_body(), _close_remaining())
-    plan = bpp.stage_wrapper(plan, list(dets) + stageable_reads(dets, reads))
     return (yield from plan)
+
+
+def multi_sample_run_split(samples, slow_axis, slow_positions, point, *,
+                           dets, scan_name, geometry=None, md=None,
+                           goto=None, settle=0.0, reads=None):
+    """One run per (sample, slow-position), with the slow axis still outermost.
+
+    This is the conservative fallback for hardware / callbacks that do not tolerate several
+    simultaneous open runs.  The slow axis is still moved only ``len(slow_positions)`` times, but
+    instead of keeping one run per sample open across all slow positions, each sample/slow-position
+    pair is opened, staged, measured, unstaged, and closed independently.
+
+    ``point(sample, slow_value)`` has the same contract as :func:`multi_sample_run`: it must do
+    the inner measurement loop and must not open/close runs.  Detector staging is per point, so a
+    point can contain many inner events (e.g. all incident angles at one WAXS arc).  ``dets`` may
+    be a fixed list or ``dets(sample, slow_value)``.
+    """
+    samples = list(samples)
+    _goto = goto if goto is not None else (lambda s: goto_sample(s, settle=settle))
+
+    def _one_run(sample, slow_value):
+        point_dets = _resolve_point_dets(dets, sample, slow_value)
+        run_md = merge_md(
+            {"scan_name": scan_name},
+            {"geometry": geometry} if geometry else {},
+            md,
+            sample.base_md(),
+            {"slow_axis": getattr(slow_axis, "name", None),
+             "slow_position": slow_value},
+        )
+
+        @bpp.stage_decorator(_stage_devices_for_read(point_dets, reads))
+        @bpp.run_decorator(md=run_md)
+        def _inner():
+            yield from point(sample, slow_value)
+
+        return (yield from _inner())
+
+    for sv in slow_positions:
+        yield from bps.mv(slow_axis, sv)
+        if settle:
+            yield from bps.sleep(settle)
+        for s in samples:
+            yield from _goto(s)
+            yield from _one_run(s, sv)

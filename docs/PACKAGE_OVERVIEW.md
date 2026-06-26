@@ -179,8 +179,13 @@ at specific message types and stay inside the document model.
 - `multi_sample_run(samples, slow_axis, slow_positions, point, *, dets, scan_name, …)`
   — **multiple runs open at once**: opens one run per sample, sweeps `slow_axis` once for the
   whole bar, writes each sample's frame into its own run via run keys. The sanctioned way to
-  minimize `waxs.arc`/`prs` travel. (Generalized from the "Tom" prototype in
+  minimize `waxs.arc`/`stage.phi` travel. Detectors are staged per sample/slow-position point
+  (not per event) so classic-ophyd AreaDetector Resource/Datum documents are emitted into the
+  same run as the Events that reference them. (Generalized from the "Tom" prototype in
   `legacy/30-user-Gann.py`, with a `finalize` that closes only still-open runs on error.)
+- `multi_sample_run_split(samples, slow_axis, slow_positions, point, *, dets, scan_name, …)`
+  — conservative fallback: still moves the slow axis outermost, but opens one independent run per
+  (sample, slow-position) instead of holding all sample runs open concurrently.
 - `goto_sample(sample, …)` — expand a `Sample` into `bps.mv` for the axes that are set.
 - `saxs_waxs_dets(*, use_saxs=True, use_waxs=True, arc_block_deg=15, …)` — the arc-aware
   detector list (`[pil900KW]` and `pil2M` only when the arc doesn't occlude it).
@@ -349,22 +354,25 @@ def _factory(name, doc):
 RE.subscribe(RunRouter([_factory]))
 ```
 
-(The `multi_sample_run` primitive already wraps everything in `finalize`/`stage` so all runs
-close and detectors unstage even on error/abort.)
+(`multi_sample_run` wraps run closing in `finalize`, and each sample/slow-position point is
+wrapped in `stage`/`unstage` so detectors unstage even on error/abort.  This per-point staging is
+intentional: staging a classic-ophyd AreaDetector once across several simultaneously-open runs
+sends the one Resource document to only the first run that reads it, leaving later runs with
+unresolvable Datum ids.)
 
 ---
 
 ## Environment & compatibility notes
 
 - These modules reference beamline globals injected by the **SMI profile collection** at
-  runtime (`bps`, `bpp`, `Signal`, `np`, `piezo`, `stage`, `waxs`, `prs`, `energy`, `pil2M`,
+  runtime (`bps`, `bpp`, `Signal`, `np`, `piezo`, `stage`, `waxs`, `energy`, `pil2M`,
   `pil900KW`, `xbpm2/3`, `pin_diode`, `pil2M_pos`, `det_exposure_time`, alignment routines,
   …). Import/run them **inside the live beamline IPython session**. The top-of-file
   `.. important::` block in each module lists its specific requirements.
 - `_samples.py` is **pure Python** (no bluesky/ophyd) and importable anywhere — including a GUI
   process. `_core` / `_preprocessors` import bluesky lazily so the package still exposes the
   sample model off-beamline.
-- Validated against **bluesky 1.8.3 / ophyd 1.6.4** using simulated devices: every technique
+- Validated against **bluesky / ophyd** using simulated devices: every technique
   plan generates a well-formed message stream (balanced `open_run`/`close_run`, balanced
   `create`/`save`), and `multi_sample_run` correctly holds multiple runs open concurrently.
 - `_core.declare_saxs_waxs_streams` uses `bps.declare_stream`, which requires a **newer

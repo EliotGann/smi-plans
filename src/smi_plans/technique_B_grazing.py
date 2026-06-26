@@ -21,8 +21,8 @@ This file demonstrates BOTH sanctioned multi-sample strategies:
    small or alignment dominates.
 2. :func:`giwaxs_bar_arc_economy` -- MULTIPLE runs open at once so ``waxs.arc`` (slow,
    in-vacuum) moves only once per arc position for the WHOLE bar.  Use when arc travel
-   dominates overhead.  (Built on :func:`_core.multi_sample_run`; a different run topology, so
-   it is *not* expressed via :func:`_compose.acquire`.)
+   dominates overhead.  (Built on :func:`_core.multi_sample_run`; detectors are staged per
+   sample/arc point so AreaDetector Resource/Datum documents stay resolvable.)
 
 Alignment uses the profile-collection routines (``alignement_gisaxs_hex`` /
 ``alignement_gisaxs_doblestack``) -- we call them, we do not reimplement them.  Because
@@ -143,6 +143,20 @@ def _arc_dets():
     return saxs_waxs_dets(use_saxs=True, use_waxs=True)
 
 
+def _arc_dets_at(arc_value, *, arc_block_deg=15):
+    """Arc-aware SAXS/WAXS detector list using the requested arc value, not live position."""
+    dets = [pil900KW]                                           # noqa: F821
+    if arc_value >= arc_block_deg:
+        dets.append(pil2M)                                      # noqa: F821
+    return dets
+
+
+def _arc_stream_name(arc_value):
+    """Stable stream name for one WAXS arc, e.g. 20 -> 'arc20', -1.5 -> 'arcm1p5'."""
+    text = "{:g}".format(float(arc_value)).replace("-", "m").replace(".", "p")
+    return "arc{}".format(text)
+
+
 # ---------------------------------------------------------------------------
 # Multi-sample bar -- strategy 1: one run per sample
 # ---------------------------------------------------------------------------
@@ -179,7 +193,9 @@ def giwaxs_bar_arc_economy(samples, *, align, align_angle=0.1, waxs_arc=(0, 20),
 
     Opens one run per sample simultaneously and writes each sample's frames into its own run
     at each arc position, so the slow in-vacuum arc moves ``len(waxs_arc)`` times total
-    instead of ``len(waxs_arc) * n_samples`` times.
+    instead of ``len(waxs_arc) * n_samples`` times.  Each arc is written to its own stream
+    (``arc0``, ``arc20`` ...), so low-angle WAXS-only data and high-angle SAXS+WAXS data do not
+    share one awkward sparse primary stream.
 
     Alignment happens up front (each sample's ``th0`` cached); the interleaved acquisition
     then needs no further alignment moves.  Incident angles per sample are taken from the
@@ -197,7 +213,12 @@ def giwaxs_bar_arc_economy(samples, *, align, align_angle=0.1, waxs_arc=(0, 20),
         th0_by_name[s.name] = th0
         s.md.setdefault("aligned_th0", float(th0))
 
-    dets = dets or _arc_dets()
+    fixed_dets = dets
+
+    def _point_dets(sample, arc_value):
+        if fixed_dets is not None:
+            return fixed_dets
+        return _arc_dets_at(arc_value)
 
     point_reads = [energy, waxs, xbpm2, xbpm3]                 # noqa: F821
 
@@ -206,10 +227,14 @@ def giwaxs_bar_arc_economy(samples, *, align, align_angle=0.1, waxs_arc=(0, 20),
         th0 = th0_by_name[sample.name]
         incident_angle = Signal(name="incident_angle", value=float(th0))  # noqa: F821
         angles = sample.incident_angles or list(default_incident_angles)
+        point_dets = _point_dets(sample, arc_value)
+        stream = _arc_stream_name(arc_value)
         for ai in angles:
             yield from bps.mv(th_axis, th0 + ai)
             yield from bps.mv(incident_angle, float(ai))
-            yield from bps.trigger_and_read(dedup_readables(list(dets) + point_reads + [incident_angle]))
+            yield from bps.trigger_and_read(
+                dedup_readables(list(point_dets) + point_reads + [incident_angle]),
+                name=stream)
         yield from bps.mv(th_axis, th0)
 
     yield from det_exposure_time(t, t)                                    # noqa: F821
@@ -218,7 +243,7 @@ def giwaxs_bar_arc_economy(samples, *, align, align_angle=0.1, waxs_arc=(0, 20),
     def _go():
         yield from multi_sample_run(
             samples, slow_axis=waxs.arc, slow_positions=list(waxs_arc),    # noqa: F821
-            point=_point, dets=dets, scan_name="giwaxs_arc_economy",
+            point=_point, dets=_point_dets, scan_name="giwaxs_arc_economy",
             geometry="reflection", md=md, settle=1.0, reads=point_reads)
 
     plan = ensure_in_wrapper(_go(), atten_in or default_atten_in)
