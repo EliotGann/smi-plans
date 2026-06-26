@@ -155,23 +155,28 @@ relative value. Promotes the field-proven `bar_plans._grid_axes_named` prototype
 
 ---
 
-## Workstream 4 — Sample positioning from `Position` — `_core.goto_sample`
-**Goal:** confirm/repair that `goto_sample` moves from `runnable_position()` (nominal/refined
-`Position`), not legacy flat `piezo_*`. **GUI contract** (coordinate with DOC plan + SAMPLE_SYSTEM).
+## Workstream 4 — Sample positioning from `Position` — `_core.goto_sample`  ✅ DONE
+**Goal:** `goto_sample` moves from `runnable_position()` (nominal/refined `Position`), not legacy flat
+`piezo_*`. **GUI contract** (coordinate with DOC plan + SAMPLE_SYSTEM).
 
-### 4a. Code — `src/smi_plans/_core.py`
-- Audit `goto_sample`: if it uses `sample.piezo_moves()`/flat fields, switch to
-  `runnable_position()` → `position_moves(...)` (add a `position_moves` helper mirroring
-  `bar_plans._goto_xz_stage`/`holder_bar.position_moves` if missing).
-- Support excluding alignment-owned axes (piezo y/th) for grazing (a `skip=` set or a variant), as
-  `bar_plans._goto_xz_stage` does.
-- Honor the `Position.frame` (`holder`/`lab`) — match exactly what the GUI writes (SAMPLE_SYSTEM D1/D21).
+### 4a. Code — `src/smi_plans/_core.py`  ✅ DONE
+- `goto_sample` now reads `runnable_position()` (refined else nominal) first via a new
+  `position_moves(position, piezo_dev, stage_dev, *, skip=())` helper, and **falls back** to the
+  legacy flat `piezo_moves()`/`hexa_moves()` only when the Position carries no coordinates (old
+  in-code samples still work).
+- `position_moves` maps `piezo_x/y/z/th` → `piezo.{x,y,z,th}` and the renamed Huber
+  `stage_x/y/z/theta/chi/phi` → `stage.{x,y,z,theta,chi,phi}`.
+- `goto_sample(..., skip={piezo.y, piezo.th})` excludes alignment-owned axes for grazing (mirrors
+  `bar_plans._goto_xz_stage`). `position_moves` exported from `_core`.
+- `Position.frame` is carried through the model; moves use the resolved Position as-is (the
+  holder→lab transform is deferred per SAMPLE_SYSTEM D4, unchanged here).
 
-### 4b. Tests
-- Sim: a `Sample` with ONLY a `nominal` Position (flat fields None) still moves — the exact
-  GUI/spreadsheet case that broke on the floor.
-- Sim: refined overrides nominal (`runnable_position()` precedence).
-- **Acceptance:** ledger row "Position-based positioning" flips to backend-done + sim-tested.
+### 4b. Tests  ✅ DONE (`tests/test_positioning.py`, 5 tests)
+- A `Sample` with ONLY a `nominal` Position (flat fields None) moves (the GUI/spreadsheet case that
+  broke on the floor); refined overrides nominal; `skip` excludes an axis; legacy flat fields still
+  work; `position_moves` maps `stage_theta/chi/phi` correctly.
+- **Acceptance:** met — ledger row "Position-based positioning" is backend-done + sim-tested. Full
+  suite 109 passed.
 
 ---
 

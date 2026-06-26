@@ -322,7 +322,7 @@ do (or does differently/untested). Each is a backend change item below.
 | Custom name ⊇ auto-name recorded fields | needs confirming | no | no | §2 skip_if_tokens superset rule |
 | One run per (sample, arc) | YES (live; avoided UnresolvableForeignKey) | no | no | §3 safe default |
 | Multi-open-run w/ staging (arc economy) | **YES (beamline-confirmed)** | **YES** (`test_multi_sample_assets.py`) | **YES** (committed `536ec39`, pushed) | §3 DONE |
-| Position-based positioning (nominal/refined) | YES (live) | no | unknown (`goto_sample`) | §4 GUI contract |
+| Position-based positioning (nominal/refined) | YES (live) | YES (`test_positioning.py`) | YES (`goto_sample` reads runnable Position) | §4 GUI contract |
 | Redis holder → SampleList bridge | YES (live, `holder_bar.py`) | no | no (missing) | §5 optional, dict-replaceable |
 | Filename token = real recorded key (no KeyError) | YES (live: KeyError('x') hit + fixed user-side) | no | no | §6 fix `spatial_grid_axes` + validate in `acquire`; skill written |
 | Filename token = real recorded key (no KeyError) | YES (live: KeyError('x') hit + fixed user-side) | no | no | §6 fix `spatial_grid_axes` + validate in `acquire`; skill written |

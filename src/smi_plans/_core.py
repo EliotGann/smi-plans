@@ -63,6 +63,7 @@ __all__ = [
     "multi_sample_run",
     "multi_sample_run_split",
     "goto_sample",
+    "position_moves",
     "saxs_waxs_dets",
     "declare_saxs_waxs_streams",
     "fname",
@@ -224,16 +225,57 @@ def merge_md(*dicts):
 # ---------------------------------------------------------------------------
 # Sample positioning
 # ---------------------------------------------------------------------------
-def goto_sample(sample, *, piezo_dev=None, hexa_dev=None, settle=0.0):
-    """Move to ``sample``'s piezo and/or hexapod coordinates (only axes that are set).
+#: Map a Position's piezo/stage fields to the (device-attr, value) needed to move there.
+#: ``piezo_th`` -> piezo.th ; ``stage_theta`` -> stage.theta ; etc.
+_POSITION_PIEZO = (("piezo_x", "x"), ("piezo_y", "y"), ("piezo_z", "z"), ("piezo_th", "th"))
+_POSITION_STAGE = (("stage_x", "x"), ("stage_y", "y"), ("stage_z", "z"),
+                   ("stage_theta", "theta"), ("stage_chi", "chi"), ("stage_phi", "phi"))
+
+
+def position_moves(position, piezo_dev, stage_dev, *, skip=()):
+    """Return the ``bps.mv`` arg list (``[dev, val, dev, val, ...]``) for a :class:`Position`.
+
+    Only fields that are set (not None) become moves.  ``skip`` is a set of device objects to
+    omit (e.g. ``{piezo.y, piezo.th}`` for grazing, where height/theta come from alignment, not the
+    stored Position).  Reads the renamed Huber ``stage_theta/chi/phi`` -> ``stage.theta/chi/phi``.
+    """
+    if position is None:
+        return []
+    skip = set(skip)
+    out = []
+    for field_name, attr in _POSITION_PIEZO:
+        v = getattr(position, field_name, None)
+        if v is not None:
+            dev = getattr(piezo_dev, attr)
+            if dev not in skip:
+                out += [dev, v]
+    for field_name, attr in _POSITION_STAGE:
+        v = getattr(position, field_name, None)
+        if v is not None:
+            dev = getattr(stage_dev, attr)
+            if dev not in skip:
+                out += [dev, v]
+    return out
+
+
+def goto_sample(sample, *, piezo_dev=None, hexa_dev=None, settle=0.0, skip=()):
+    """Move to ``sample``'s coordinates (only axes that are set).
+
+    Reads the sample's **runnable** :class:`Position` (``refined`` if aligned, else ``nominal``) --
+    the source GUI/spreadsheet samples actually use -- and moves the piezo + Huber stage axes it
+    sets.  Falls back to the legacy flat ``piezo_x``/``hexa_x`` fields only if the Position carries
+    no coordinates (so older in-code samples still work).
 
     Parameters
     ----------
     sample : _samples.Sample
     piezo_dev : object with ``.x/.y/.z/.th`` (default: global ``piezo``)
-    hexa_dev : object with ``.x/.y/.z/.th`` (default: global ``stage``)
+    hexa_dev : object with ``.x/.y/.z/.theta/.chi/.phi`` (default: global ``stage``)
     settle : float
         Optional sleep after the move.
+    skip : iterable of device objects
+        Axes to NOT move (e.g. ``{piezo.y, piezo.th}`` for grazing, where the aligned height/theta
+        come from alignment rather than the stored Position).
 
     Notes
     -----
@@ -243,11 +285,21 @@ def goto_sample(sample, *, piezo_dev=None, hexa_dev=None, settle=0.0):
     p = piezo_dev if piezo_dev is not None else piezo            # noqa: F821 (global)
     h = hexa_dev if hexa_dev is not None else stage              # noqa: F821 (global)
 
-    args = []
-    for short, val in sample.piezo_moves().items():
-        args += [getattr(p, short), val]
-    for short, val in sample.hexa_moves().items():
-        args += [getattr(h, short), val]
+    # Primary: the runnable Position (nominal/refined) -- what the GUI/store writes.
+    pos = sample.runnable_position() if hasattr(sample, "runnable_position") else None
+    args = position_moves(pos, p, h, skip=skip)
+
+    # Back-compat: if the Position carried nothing, fall back to the legacy flat fields.
+    if not args:
+        skip = set(skip)
+        for short, val in sample.piezo_moves().items():
+            dev = getattr(p, short)
+            if dev not in skip:
+                args += [dev, val]
+        for short, val in sample.hexa_moves().items():
+            dev = getattr(h, short)
+            if dev not in skip:
+                args += [dev, val]
 
     if args:
         yield from bps.mv(*args)
