@@ -56,7 +56,8 @@ Key types
 
 import warnings
 
-from ._core import one_sample_run, goto_sample, fname, merge_md, dedup_readables
+from ._core import (one_sample_run, goto_sample, fname, merge_md, dedup_readables,
+                    COMMON_TOKENS)
 
 try:
     import bluesky.plan_stubs as bps
@@ -71,6 +72,7 @@ __all__ = [
     "nest_axes",
     "acquire",
     "acquire_bar",
+    "validate_name_tokens",
     "move_energy_fb",
     "energy_axis",
     "temperature_axis",
@@ -269,11 +271,110 @@ def _check_axis_order(axes):
 
 
 # ---------------------------------------------------------------------------
+# Filename-token validation (catch the post-run KeyError at build time)
+# ---------------------------------------------------------------------------
+import re as _re
+
+_TOKEN_FIELD_RE = _re.compile(r"\{([^}:!\[]+)")
+
+
+def _template_fields(template):
+    """The ``{field}`` names in a ``sample_name`` template (strip any ``:fmt``/``!conv``)."""
+    return [m.split(".")[0].split("[")[0] for m in _TOKEN_FIELD_RE.findall(template or "")]
+
+
+def _describe_keys(dev):
+    """Best-effort recorded data keys for a readable: its ``describe()`` keys, or () if not
+    describeable at build time (no live device / GUI-side construction)."""
+    try:
+        return tuple(dev.describe().keys())
+    except Exception:
+        return ()
+
+
+def validate_name_tokens(sample_name, *, dets, reads, axes):
+    """Raise ``ValueError`` if a ``{token}`` in ``sample_name`` cannot resolve to a recorded data key.
+
+    The downstream file writer / symlink workflow fills ``{field}`` tokens from the run's recorded
+    event keys (``<device>_<attr>``); a token with no matching key raises ``KeyError(field)`` AFTER
+    the scan has already taken data.  This turns that into an immediate, actionable build-time error.
+
+    A token field is accepted if ANY of:
+      * it is a recognized scan-naming token (:data:`COMMON_TOKENS`, e.g. ``{energy_energy}``,
+        ``{waxs_arc}``, ``{pin_diode_current2_mean_value}``) -- these are injected by the beamline
+        naming preprocessor even when not in ``reads``;
+      * it equals an axis ``record`` Signal name (exact), e.g. ``incident_angle``, ``x``;
+      * it is (or prefixes to) a recorded key of a ``dets``/``reads`` device -- matched against the
+        device ``describe()`` keys when available, else against ``<device.name>`` as a prefix.
+
+    To avoid false positives off-beamline (where devices may not be describeable, and where sim keys
+    differ from real ones), a token is flagged **only when** describe() info is available for the
+    readables and the token matches none of the above.  If nothing is describeable, validation is
+    skipped (can't prove absence).
+
+    Scope note: the *read-once collision* (a token device injected by the beamline naming
+    preprocessor AND also read by the plan -> ``Data keys ... collide``) and the *superset* rule
+    (a custom token-bearing name must still record everything the default naming would have) depend
+    on the **profile-side** scan-naming preprocessor, which this package cannot observe.  Those are
+    enforced beamline-side; here we cover the high-value case that caused real post-run failures --
+    a token with no recorded key at all (the ``{x}`` vs ``{piezo_x}`` trap).
+    """
+    fields = _template_fields(sample_name)
+    if not fields:
+        return
+
+    common = {k.strip("{}") for k in COMMON_TOKENS}
+    record_names = {a.record.name for a in axes if getattr(a, "record", None) is not None}
+
+    readables = list(dets or []) + list(reads or [])
+    described_keys = set()
+    device_name_prefixes = set()
+    any_describe = False
+    for d in readables:
+        keys = _describe_keys(d)
+        if keys:
+            any_describe = True
+            described_keys.update(keys)
+        nm = getattr(d, "name", None)
+        if nm:
+            device_name_prefixes.add(nm)
+
+    if not any_describe and not record_names:
+        return  # cannot prove anything (no live devices) -> don't raise
+
+    def _ok(field):
+        if field in common or field in record_names:
+            return True
+        if field in described_keys:
+            return True
+        # prefix match: a token like xbpm2_sumX / piezo_x / pin_diode_current2_mean_value
+        for k in described_keys:
+            if field == k or field.startswith(k):
+                return True
+        for nm in device_name_prefixes:
+            if field == nm or field.startswith(nm + "_"):
+                return True
+        return False
+
+    missing = [f for f in fields if not _ok(f)]
+    if missing:
+        known = sorted(common | record_names | described_keys)
+        raise ValueError(
+            "filename token(s) {} in sample_name {!r} have no recorded data key. "
+            "Tokens must equal a recorded key (e.g. {{piezo_x}} not {{x}}, {{energy_energy}} not "
+            "{{energy}}), an axis record-Signal name, or a known token {}. "
+            "Either fix the token, add the device to reads/dets, or record a Signal(name=...) for "
+            "it. See skills/naming-and-filename-tokens.md.".format(
+                missing, sample_name, sorted(common))
+        )
+
+
+# ---------------------------------------------------------------------------
 # The experiment builder
 # ---------------------------------------------------------------------------
 def acquire(name, dets, axes, *, reads=None, setup=None, align=None, geometry=None,
             scan_name="acquire", md=None, baseline=None, name_tokens=None, check_order=True,
-            sample=None, user_hints=None):
+            sample=None, user_hints=None, validate_tokens=True):
     """Compose ONE run for ONE sample: (align) + setup + nested ``axes`` + ``trigger_and_read``.
 
     This is the compositional heart.  You provide the *beam/q config* (``dets`` + ``reads``),
@@ -360,6 +461,11 @@ def acquire(name, dets, axes, *, reads=None, setup=None, align=None, geometry=No
                 toks.append(a.name + a.token("{}"))   # e.g. "energy{energy}" -> "energy{energy}"
         name_tokens = toks
     sample_name = fname(name, *name_tokens)
+
+    # Fail fast on a filename token that can't resolve to a recorded key (else it surfaces as a
+    # post-run KeyError in the file-naming/symlink step, after data is already taken).
+    if validate_tokens:
+        validate_name_tokens(sample_name, dets=dets, reads=all_reads, axes=axes)
 
     def _measure():
         # De-dup so a detector and one of its own sub-devices (e.g. pil900KW + waxs, where

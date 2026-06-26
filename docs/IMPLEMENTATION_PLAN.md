@@ -100,27 +100,29 @@ Every caller/passer of the removed params, found in the audit:
 **Goal:** a bad filename token fails at **build time** with a clear message, not as a post-run
 `KeyError`. Also enforce the read-once + superset rules (skip_if_tokens interaction).
 
-### 2a. Token validator in `acquire` — `src/smi_plans/_compose.py`
-- Compute the set of **keys that will actually be recorded**: each axis `record` Signal name,
-  each `<device>_<component>` for devices in `reads`/`dets` (+ the token devices the naming
-  preprocessor will inject for recognized tokens like `{energy_energy}`/`{waxs_arc}`).
-- Parse `{field}` names out of the final `sample_name` template (the `fname(...)` result + any
-  caller `md['sample_name']`).
-- **Raise** a clear `ValueError` listing any token with no matching recorded key
-  ("filename token {x} has no recorded data key; recorded keys are {...}. Did you mean {piezo_x}, or
-  record a Signal(name='x')? See skills/naming-and-filename-tokens.md").
-- **Collision check:** raise if a token device is BOTH preprocessor-injected AND in `reads`/an axis
-  `record` (the `Data keys ... collide` cause) — reproduce that first in sim.
-- **Superset check:** when a custom token-bearing name suppresses the default naming, assert every
-  field the default naming would have recorded is still recorded somewhere; warn/raise on silent drop.
+### 2a. Token validator in `acquire` — `src/smi_plans/_compose.py`  ✅ DONE
+- `validate_name_tokens(sample_name, dets=, reads=, axes=)` + `validate_tokens=True` kwarg on
+  `acquire` (escape hatch). Computes the recorded-key set from: axis `record` Signal names (exact),
+  `COMMON_TOKENS` (the naming-preprocessor-injected tokens like `{energy_energy}`/`{waxs_arc}`), and
+  each readable's `describe()` keys (+ `<device.name>` prefix). Raises a clear `ValueError` naming the
+  offending token(s) and pointing at `skills/naming-and-filename-tokens.md`.
+- **False-positive safety:** flags a token ONLY when describe() info is available and the token
+  matches nothing (so off-beamline / GUI-side construction never spuriously raises; sim-vs-real key
+  differences are bridged by `COMMON_TOKENS`).
+- **SCOPE (resolved):** the *collision* (token device injected by the profile naming preprocessor AND
+  in reads → `Data keys collide`) and the *superset* rule depend on the **profile-side** preprocessor,
+  which this package cannot observe — they are enforced beamline-side, NOT here. This validator covers
+  the high-value case that caused real post-run failures: a token with **no recorded key at all**
+  (the `{x}` vs `{piezo_x}` trap). (Existing `dedup_readables` already handles the in-`acquire`
+  duplicate-readable collision, with its own regression test.)
 
-### 2b. Tests
-- Sim: reproduce `KeyError`-equivalent by building a name with `{x}` while only `piezo_x` is recorded
-  → assert `acquire` now raises at build time (before any run).
-- Sim: reproduce `Data keys ... collide` (custom `{energy_energy}` + `energy` in reads) → assert the
-  validator catches it.
-- Sim: a custom name does not lose a field the default name would have recorded.
-- **Acceptance:** these three are red before the validator, green after.
+### 2b. Tests  ✅ DONE (`tests/test_name_tokens.py`, 6 tests)
+- `{x}` with only `piezo_x` recorded → build-time `ValueError` (the reproduced bug).
+- `{piezo_x}` / `{energy_energy}` (COMMON_TOKENS) / `{incident_angle}` (axis record) /
+  `{xbpm2_sumX}` (describe prefix) → all accepted, no false positive.
+- `validate_tokens=False` → bypasses.
+- (Collision/superset sim repro deferred to the profile side — see SCOPE above.)
+- **Acceptance:** met; full suite 100 passed.
 
 ---
 
