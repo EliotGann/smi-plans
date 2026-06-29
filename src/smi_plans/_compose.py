@@ -328,16 +328,17 @@ def validate_name_tokens(sample_name, *, dets, reads, axes):
 
     readables = list(dets or []) + list(reads or [])
     described_keys = set()
-    device_name_prefixes = set()
+    undescribed_name_prefixes = set()   # devices we could NOT describe -> fall back to name prefix
     any_describe = False
     for d in readables:
         keys = _describe_keys(d)
         if keys:
             any_describe = True
             described_keys.update(keys)
-        nm = getattr(d, "name", None)
-        if nm:
-            device_name_prefixes.add(nm)
+        else:
+            nm = getattr(d, "name", None)
+            if nm:
+                undescribed_name_prefixes.add(nm)
 
     if not any_describe and not record_names:
         return  # cannot prove anything (no live devices) -> don't raise
@@ -347,11 +348,15 @@ def validate_name_tokens(sample_name, *, dets, reads, axes):
             return True
         if field in described_keys:
             return True
-        # prefix match: a token like xbpm2_sumX / piezo_x / pin_diode_current2_mean_value
+        # A token may extend a real describe key with a stats suffix (e.g. the describe key is
+        # 'pin_diode_current2' but the token is 'pin_diode_current2_mean_value').  Allow that.
         for k in described_keys:
-            if field == k or field.startswith(k):
+            if field.startswith(k + "_"):
                 return True
-        for nm in device_name_prefixes:
+        # For devices we could NOT describe (off-beamline / GUI-side), we can't know their exact
+        # keys -- accept anything that looks like '<device.name>_...'.  (When a device DID describe,
+        # its exact keys are authoritative, so a typo like {piezo_QQ} on a read 'piezo' is rejected.)
+        for nm in undescribed_name_prefixes:
             if field == nm or field.startswith(nm + "_"):
                 return True
         return False
@@ -362,11 +367,10 @@ def validate_name_tokens(sample_name, *, dets, reads, axes):
         raise ValueError(
             "filename token(s) {} in sample_name {!r} have no recorded data key. "
             "Tokens must equal a recorded key (e.g. {{piezo_x}} not {{x}}, {{energy_energy}} not "
-            "{{energy}}), an axis record-Signal name, or a known token {}. "
+            "{{energy}}), an axis record-Signal name, or a known/recorded key. "
             "Either fix the token, add the device to reads/dets, or record a Signal(name=...) for "
-            "it. See skills/naming-and-filename-tokens.md.".format(
-                missing, sample_name, sorted(common))
-        )
+            "it. Recorded keys available: {}. See skills/naming-and-filename-tokens.md.".format(
+                missing, sample_name, known))
 
 
 # ---------------------------------------------------------------------------
