@@ -313,6 +313,37 @@ do (or does differently/untested). Each is a backend change item below.
   (+ `multi_sample_run_split` fallback + regression test). Remaining work is a single hardware
   checkout line in the ledger, not a separate blocker doc.
 
+## 2026-07-01 follow-up from `SWAXS_user_scripts/bar_plans.py`
+
+Two current user-script files were reviewed:
+- `/nsls2/users/egann/git/smi/SWAXS_user_scripts/bar_plans.py` -- mature helper-rich wrapper.
+- `/nsls2/users/egann/git/smi/SWAXS_user_scripts/CFN/Yugang/bar_plans.py` -- earlier copy plus the live command log from pass 318919.
+
+### Helper code absorbed without changing plan behavior
+- Added pure `smi_plans._bar_helpers` and package exports for:
+- `bar_name_tokens(...)` / `apply_name_prefix(...)` / `preview_bar_name(...)` -- reusable form of the field `name_spec` filename customization and preview.
+- `adjust_holder_positions(...)` -- dry-run-first bulk refinement of holder sample positions into `refined`, preserving `nominal`.
+- `sort_holder_by_name(...)` -- dry-run-first holder run-order sorting by sample name, including natural numeric sort.
+- User-script aliases are also exported: `preview_name`, `adjust_bar_positions`, and `sort_bar_by_name`.
+
+These are additive console/GUI helpers. They do not change existing `technique_*` signatures or defaults.
+
+### Beamtime command-log lessons still pointing to docs/features
+- Project/proposal setup was still manual (`proposal_swap`, `project_set`, then passing `project` into bars). This reinforces the already-decided session-context work: project/proposal should be set once per session and read by plans/GUI/QS rather than repeated as a fragile per-plan kwarg.
+- Operators repeatedly used the same filename customization: omit energy, include exposure, include WAXS arc, and include formatted `piezo_x/y/z`. This should become a documented recipe, and later a GUI preset, rather than requiring handwritten `name_spec` dictionaries.
+- GUI guidance now lives in `skills/smi-plans-gui-builder.md` under "Naming UI contract from Gao/Gomez field use". The filename-token safety rules and helper API are mirrored in `skills/naming-and-filename-tokens.md`.
+- The command log shows restarts, `%run -i`, `RE.stop()`, and `RE.abort()` during early testing. The useful backend response is not compatibility-breaking: provide dry-run/summarize examples for holder bars, clearer recovery docs, and keep helpers idempotent/dry-run-first.
+- The user script had to inject beamline globals into its module namespace. That remains a startup/deployment break point for standalone user scripts; the long-term fix is to eliminate user-side wrappers by moving ready-to-run holder bars into the installed package or profile startup namespace.
+- Detector selection used an updated `ARC_SAXS_BLOCK_DEG = 30` in the mature wrapper versus the older 15-degree default in docs/code comments. This is a real beamline-geometry policy point and should be configurable/documented per run or session before changing package defaults.
+- `transmission_bar_grid` skipped samples without stored `x/y` positions with a friendly print. Backend bars should consider an opt-in `skip_missing_position=True` mode; making that default would be behavior-changing because current movement failures may be relied on to catch bad sample tables.
+- The mature wrapper records `exposure_s` as a soft Signal for filename tokens. This is safe and useful, but adding it automatically to all backend plans changes recorded columns and possibly filenames; for now it is documented via helper name previews and should be added later behind an explicit option.
+
+### Breaking points to avoid changing yet
+- Dropping the `project` kwarg from bar signatures in favor of session context is desired but breaking.
+- Changing default arc/SAXS threshold from 15 to 30 degrees may change detector coverage.
+- Making backend bars skip bad/missing positions instead of failing changes safety semantics.
+- Automatically recording exposure or adopting `name_spec` across all existing bars changes event keys and filenames.
+
 ## Verification ledger (fill in as we go)
 | Behavior | Field-validated? | Sim test? | Backend done? | Notes |
 |---|---|---|---|---|
@@ -326,3 +357,4 @@ do (or does differently/untested). Each is a backend change item below.
 | Redis holder → SampleList bridge | YES (live, `holder_bar.py`) | YES (`test_holder.py`, dict) | YES (`_holder.py`) | §5 optional, dict-replaceable |
 | Filename token = real recorded key (no KeyError) | YES (live: KeyError('x') hit + fixed user-side) | no | no | §6 fix `spatial_grid_axes` + validate in `acquire`; skill written |
 | Filename token = real recorded key (no KeyError) | YES (live: KeyError('x') hit + fixed user-side) | no | no | §6 fix `spatial_grid_axes` + validate in `acquire`; skill written |
+| Field bar console helpers | YES (live user script) | YES (`test_bar_helpers.py`) | YES (`_bar_helpers.py`) | additive: name preview, holder adjust/sort |

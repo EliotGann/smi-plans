@@ -63,6 +63,17 @@ from ._holder import (  # noqa: F401  (pure loader; bluesky lazy in save/clear_a
     clear_aligned,
     sample_center,
 )
+from ._bar_helpers import (  # noqa: F401  (pure console/GUI helpers)
+    POSITION_AXES,
+    bar_name_tokens,
+    apply_name_prefix,
+    preview_bar_name,
+    preview_name,
+    adjust_holder_positions,
+    adjust_bar_positions,
+    sort_holder_by_name,
+    sort_bar_by_name,
+)
 from ._lists import (  # noqa: F401  (pure python; redis imported lazily in from_redis)
     NamedList,
     ListStore,
@@ -98,6 +109,15 @@ __all__ = [
     "save_aligned",
     "clear_aligned",
     "sample_center",
+    "POSITION_AXES",
+    "bar_name_tokens",
+    "apply_name_prefix",
+    "preview_bar_name",
+    "preview_name",
+    "adjust_holder_positions",
+    "adjust_bar_positions",
+    "sort_holder_by_name",
+    "sort_bar_by_name",
     "NamedList",
     "ListStore",
     "resolve_list",

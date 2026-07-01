@@ -151,3 +151,38 @@ md={'sample_name': name + "_x{piezo_x}_y{piezo_y}"}                          # t
 # BAD: axis-name tokens that are not data keys  -> KeyError('x') / KeyError('y')
 name_tokens=["x{x}", "y{y}"]    # only valid if a Signal(name="x")/(name="y") is recorded (Option B)
 ```
+
+## GUI naming helper contract
+
+The GUI should not make users type raw `name_tokens` for common cases. Use the pure helpers exported
+by `smi_plans`:
+
+```python
+from smi_plans import preview_bar_name, bar_name_tokens, apply_name_prefix
+
+name_spec = {
+    "name_prefix": "Gao",
+    "include_energy": False,
+    "include_exposure": True,
+    "arc_fmt": "waxs_{:.0f}",
+    "extra_tokens": ["px_{piezo_x:.1f}", "py_{piezo_y:.1f}", "pz_{piezo_z:.1f}"],
+}
+
+template = preview_bar_name("s1", arc=15, exposure=1.0, name_spec=name_spec)
+tokens = bar_name_tokens(15, **name_spec)
+base = apply_name_prefix("s1", name_spec)
+```
+
+GUI rules:
+
+- Offer structured controls for prefix, energy, exposure, arc, incidence, grid offsets, and common
+  position tokens.
+- Show both the unfilled template and a fake filled example before code generation.
+- Treat `extra_tokens` as advanced input and validate every `{field}`.
+- Do not enable `include_exposure` unless the generated plan records `Signal(name="exposure_s")` or
+  otherwise records an `exposure_s` data key.
+- Do not generate legacy filename baking such as `xbpm3.sumY.value`, `piezo.x.position`, `.get()`, or
+  f-stringed live reads. Record the device or Signal and use a token.
+- Use group presets only as editable starting points. Gao-style transmission snapshots often omit
+  energy and include exposure, arc, and absolute piezo position tokens. Gomez-style resonant scans
+  often include energy, arc, and beam-monitor context, but the BPM token must match a recorded key.

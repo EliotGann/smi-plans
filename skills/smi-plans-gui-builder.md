@@ -235,6 +235,117 @@ Device → key mapping (the common trap is the left vs right column):
 The GUI should **pre-validate** the chosen tokens against the axes/reads (same logic as
 `_compose.validate_name_tokens`) and show the error *before* the user takes the script to beam.
 
+## Naming UI contract from Gao/Gomez field use
+
+The GUI needs a first-class filename/naming panel, not a free-text-only box. The field scripts show
+that users repeatedly need predictable filenames for filesystem browsing, but the backend must keep
+the authoritative context recorded in events and metadata. The GUI should therefore edit a structured
+`name_spec` and show a live preview using `smi_plans.preview_bar_name(...)`, while still allowing an
+advanced raw-token override.
+
+### Helper functions the GUI should use
+
+The package exports pure helpers promoted from the live `bar_plans.py` workflow:
+
+| helper | GUI use |
+|---|---|
+| `preview_bar_name(...)` / `preview_name(...)` | Render the template and filled fake example in the naming panel. |
+| `bar_name_tokens(...)` | Convert structured naming controls into `name_tokens` for generated code. |
+| `apply_name_prefix(...)` | Show exactly how a prefix lands before the sample name. |
+| `adjust_holder_positions(...)` / `adjust_bar_positions(...)` | Dry-run-first bulk offset/set tool for all samples on a holder. |
+| `sort_holder_by_name(...)` / `sort_bar_by_name(...)` | Dry-run-first run-order cleanup for a holder. |
+
+These helpers are intentionally not plans and do not move hardware. They can be called by the GUI
+against a live `SampleStore.from_redis()` connection or an offline `SampleStore({})` during GUI
+development.
+
+### Structured `name_spec` editor
+
+The GUI should expose the common knobs as widgets and store them as a dict:
+
+```python
+name_spec = {
+    "name_prefix": "Gao",
+    "include_energy": False,
+    "include_exposure": True,
+    "include_arc": True,
+    "arc_fmt": "waxs_{:.0f}",
+    "include_incidence": False,
+    "extra_tokens": ["px_{piezo_x:.1f}", "py_{piezo_y:.1f}", "pz_{piezo_z:.1f}"],
+}
+```
+
+Recommended UI fields:
+
+| UI field | `name_spec` key | Notes |
+|---|---|---|
+| Prefix before sample | `name_prefix` | Field examples: `Gao`, `YZhang`, `SYang`, `Standard`; keep it literal text. |
+| Include energy | `include_energy` / `energy_token` | Default token is `{energy_energy}eV`; Gao transmission snapshots often turned this off. |
+| Include exposure | `include_exposure` / `exposure_token` | Field scripts wanted `exp_{exposure_s}s`; only enable when the plan records `exposure_s`. |
+| Include WAXS arc | `include_arc` / `arc_fmt` | Gao used `waxs_{:.0f}` for filesystem-friendly arc labels. |
+| Include incidence | `include_incidence` / `incidence_token` | Default on for GIWAXS/incident-angle scans, off for pure transmission. |
+| Include grid offsets | `grid` | Only valid when centered spatial grid records relative `{x}`/`{y}`. |
+| Position tokens | `extra_tokens` | Offer checkboxes for `px_{piezo_x:.1f}`, `py_{piezo_y:.1f}`, `pz_{piezo_z:.1f}`. |
+| Advanced extra tokens | `extra_tokens` | Validate every `{field}` before allowing code generation. |
+
+The live preview should show both:
+
+```text
+TEMPLATE: Gao_s1_exp_{exposure_s}s_waxs_15_px_{piezo_x:.1f}_py_{piezo_y:.1f}_pz_{piezo_z:.1f}_
+EXAMPLE : Gao_s1_exp_1.0s_waxs_15_px_55000.0_py_4000.0_pz_-1200.0_
+```
+
+Use `preview_bar_name(sample, arc=..., grid=..., incidence=..., exposure=..., name_spec=...)` for
+this. Do not reimplement the formatting rules in the GUI.
+
+### Presets from field groups
+
+The GUI should ship naming presets as editable starting points. These are not new backend defaults;
+they only pre-fill `name_spec`.
+
+| preset | Source pattern | `name_spec` |
+|---|---|---|
+| Gao transmission positions | 2026 pass 318919 command log | `{"include_energy": False, "include_exposure": True, "arc_fmt": "waxs_{:.0f}", "extra_tokens": ["px_{piezo_x:.1f}", "py_{piezo_y:.1f}", "pz_{piezo_z:.1f}"]}` |
+| Gomez resonant WAXS | legacy sulfur/calcium edge scripts | include sample, `{energy_energy}eV`, WAXS arc, and beam monitor token such as `xbpm{xbpm3_sumY}` only if that exact key is recorded; prefer `xbpm2_sumX` if using the standard reads. |
+| GIWAXS energy | mature bar wrapper | include `{energy_energy}eV`, `ai{incident_angle}`, WAXS arc, optional fresh-spot/grid offsets. |
+| Simple transmission snapshot | repeated Gao/YZhang/SYang/Standard snapshots | omit energy, include exposure, include WAXS arc, include absolute piezo position tokens. |
+
+When a preset mentions a token not known to `COMMON_TOKENS`, an axis record Signal, or a readable
+device key, the GUI must either add the corresponding read or mark the token invalid. In particular,
+Gomez legacy scripts baked `xbpm3.sumY.value` into names by hand; the GUI must not do that. It should
+record the BPM device and use the real recorded key if available, or omit that token.
+
+### Holder cleanup tools in the GUI
+
+The Gao workflow also exposed two non-naming operations that belong in the Samples/Holders panel:
+
+| operation | GUI behavior |
+|---|---|
+| Bulk adjust holder positions | Call `adjust_holder_positions(holder, delta=..., absolute=..., base=..., dry_run=True)` first and display the before/after table. Require an explicit second click to commit with `dry_run=False`. |
+| Sort holder by sample name | Call `sort_holder_by_name(holder, dry_run=True)` and show current order versus proposed order. Require explicit commit. |
+
+These are high-value during beamtime because they replace ad-hoc edits after a visual alignment pass.
+Keep them dry-run-first, auditable, and scoped to a holder. They write `refined` or holder
+`sample_ids`; they must not alter `nominal` sample definitions unless a future UI explicitly adds a
+separate nominal-edit workflow.
+
+### General Gomez/Gao guidance to encode as UI affordances
+
+The unabsorbed guidance is mostly workflow, not new code:
+
+| field lesson | GUI affordance |
+|---|---|
+| Users run whole-night sequences across proposals/projects. | Support saving/loading run-book specs and grouping generated plan calls, but do not solve proposal switching locally; proposal remains session/facility context. |
+| Samples were often represented by separate `sample_list`, `x_list`, `y_list`, `z_list`. | Prefer holder/sample-table editing in `SampleStore`; show validation that names and positions are linked by sample id, not parallel-list order. |
+| Users manually checked and nudged sample locations before scans. | Provide holder dry-run movement preview, bulk `adjust_holder_positions`, and an explicit “commit refined positions” path. |
+| Resonant WAXS/NEXAFS scans used fresh spots by stepping `piezo.y` with energy. | Expose fresh-spot direction/step as scan options and reflect it in event-count/dose preview. |
+| Legacy scripts hand-read BPMs and motor positions into filename strings. | Replace with token checkboxes backed by recorded keys; never generate `.value`, `.get()`, or `.position` into filenames. |
+| Retired detector names (`pil300KW`) and old WAXS move forms appear in legacy scripts. | Device registry should only offer current names (`pil900KW`, `pil2M`, `waxs.arc`) and flag unknown legacy names during import. |
+| `det_exposure_time(...)` must be run as a plan. | Generated code should use backend plan `t=` options or `yield from det_exposure_time(t, t)`, never a bare function call. |
+
+Do not treat group-specific presets as hardcoded defaults. They are starting templates the user can
+edit per beamtime.
+
 ## The code generator (the deliverable users consume now)
 
 `spec → str` (a runnable script). It should emit code that looks hand-written and idiomatic, so
