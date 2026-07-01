@@ -6,7 +6,8 @@
 >
 > **Plan docs:** `FIELD_LESSONS_BAR_PLANS.md` (field evidence + decisions), `IMPLEMENTATION_PLAN.md`
 > (backend code workstreams WS0–WS7), `DOC_CORRECTIONS_PLAN.md` (docs incl. GUI),
-> `LEGACY_REVIEW_PLAN.md` (regenerate annotations), `NAMED_LISTS_PLAN.md` (the named-list library).
+> `LEGACY_REVIEW_PLAN.md` (regenerate annotations), `NAMED_LISTS_PLAN.md` (the named-list library),
+> `POLYGON_REGIONS_PLAN.md` (future central polygon/region scan model).
 
 ## The logical path (decided)
 **Decisions → code (energy-led) → docs (concurrent per workstream) → legacy (last).**

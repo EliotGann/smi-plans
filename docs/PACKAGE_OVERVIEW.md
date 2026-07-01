@@ -186,6 +186,11 @@ at specific message types and stay inside the document model.
 - `multi_sample_run_split(samples, slow_axis, slow_positions, point, *, dets, scan_name, …)`
   — conservative fallback: still moves the slow axis outermost, but opens one independent run per
   (sample, slow-position) instead of holding all sample runs open concurrently.
+- `polygon_region_run(sample, region_name, dets, …)` / `polygon_region_bar(samples, region_name,
+  dets, …)` — correlated point-list scans for GUI-drawn polygon regions stored on samples. These
+  use `sample.runnable_position()` as the center, record relative `{x}`/`{y}` and `{region_name}`
+  Signals, and should include the parent motor device (usually `piezo`) in `reads` for absolute
+  motor provenance. Polygon points are not independent `ScanAxis` dimensions.
 - `goto_sample(sample, …)` — expand a `Sample` into `bps.mv` for the axes that are set.
 - `saxs_waxs_dets(*, use_saxs=True, use_waxs=True, arc_block_deg=15, …)` — the arc-aware
   detector list (`[pil900KW]` and `pil2M` only when the arc doesn't occlude it).
@@ -261,7 +266,8 @@ For a bespoke experiment (the common case), assemble axes — don't write a mono
      beamstop, a `manual_step`. Runs once just after `open_run`. Its moves/reads are recorded.
 3. **Sampling / scanning:** build a list of axes (`temperature_axis`, `motor_axis("arc", …)`,
    `incidence_axis`, `energy_axis`, `spatial_grid_axes`, `time_axis`, …) **outermost first**
-   (slow/in-vacuum first).
+   (slow/in-vacuum first). For polygon regions, use `polygon_region_run`/`polygon_region_bar`
+   instead of axes because the points are correlated `(x, y)` pairs.
 4. **Manual / interactive (if any):** add `manual_step(...)` in `setup` to capture a hand-set
    value, a `manual_axis(...)` for a user-stepped dimension, or wrap the whole thing in
    `manual_loop(...)` for an open-ended user-paced bar. Typed values land on recorded Signals.

@@ -76,6 +76,10 @@
 | D21 | CSV frame (was Q-frames) | Imported coords default to **nominal/holder-relative**; `frame=lab`/`--absolute` to paste absolute stage numbers. |
 | D22 | Sample/Holder id (was Q-id-scheme) | **`uuid4` hex** (opaque, stable); human `name`+`holder`+`slot` are the editable fields; user-supplied id honored as upsert key on import. |
 
+Related future extension: `POLYGON_REGIONS_PLAN.md` proposes how GUI-drawn polygon scan regions
+could become sample/holder facts, first via `Sample.md['scan_regions']` and later as a typed
+`ScanRegion` model. It is intentionally not part of the locked D1-D22 sample-position contract yet.
+
 ---
 
 ## 1. Where this lives & how it connects

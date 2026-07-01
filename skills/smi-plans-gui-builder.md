@@ -204,6 +204,11 @@ different field name, prefer this.
 | `time` | `time_axis` | `n_frames`, `period` | `elapsed_signal` |
 | `manual` | `manual_axis` | `name`, `prompt`, `values`, `record_name` | `manual_signal` |
 
+Polygon regions are intentionally not listed as a normal axis type here. A polygon is a correlated
+point list, not a rectangular product of independent axes. When `smi-acquire` stores drawn regions
+in `sample.md['scan_regions']`, generated code should call `polygon_region_run(...)` or
+`polygon_region_bar(...)`; keep explicit point-list scripts only for unsaved one-off polygons.
+
 Order in the list = nesting (outermost first). The GUI ordering guardrail mirrors
 `_compose._check_axis_order` (slow axes — arc/phi/temperature — outermost).
 

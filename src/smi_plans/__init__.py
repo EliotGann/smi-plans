@@ -74,6 +74,11 @@ from ._bar_helpers import (  # noqa: F401  (pure console/GUI helpers)
     sort_holder_by_name,
     sort_bar_by_name,
 )
+from ._regions import (  # noqa: F401  (pure GUI/region helpers)
+    polygon_grid_offsets,
+    region_grid_offsets,
+    sample_region,
+)
 from ._lists import (  # noqa: F401  (pure python; redis imported lazily in from_redis)
     NamedList,
     ListStore,
@@ -126,6 +131,9 @@ __all__ = [
     "adjust_bar_positions",
     "sort_holder_by_name",
     "sort_bar_by_name",
+    "polygon_grid_offsets",
+    "region_grid_offsets",
+    "sample_region",
     "NamedList",
     "ListStore",
     "resolve_list",

@@ -58,6 +58,7 @@ import warnings
 
 from ._core import (one_sample_run, goto_sample, fname, merge_md, dedup_readables,
                     COMMON_TOKENS)
+from ._regions import sample_region, region_grid_offsets
 
 try:
     import bluesky.plan_stubs as bps
@@ -72,6 +73,8 @@ __all__ = [
     "nest_axes",
     "acquire",
     "acquire_bar",
+    "polygon_region_run",
+    "polygon_region_bar",
     "validate_name_tokens",
     "move_energy_fb",
     "energy_axis",
@@ -524,6 +527,122 @@ def acquire_bar(samples, dets, axes_for, *, reads=None, setup_for=None, align_fo
             s.name, dets, axes, reads=reads, setup=setup, align=align, geometry=geometry,
             scan_name=scan_name, md=merge_md(md, s.md), baseline=baseline,
             name_tokens=name_tokens, check_order=check_order)
+
+
+def polygon_region_run(sample, region_name, dets, *, reads=None, x_motor=None, y_motor=None,
+                       setup=None, align=None, geometry=None, scan_name="polygon_region",
+                       md=None, baseline=None, name_tokens=None, validate_tokens=True,
+                       t=None, goto=True, allow_truncated=False):
+    """Acquire a correlated point-list scan over a named polygon region on one sample.
+
+    The polygon is read from ``sample.md['scan_regions']`` (or future ``sample.regions``) via
+    :func:`smi_plans._regions.sample_region`. Region vertices are sample-relative offsets; the scan
+    center is the sample's current runnable ``Position``. Each event records relative offset Signals
+    named ``x`` and ``y`` so filename tokens ``{x}`` / ``{y}`` are valid, while ``reads`` should
+    include the parent motor device (usually ``piezo``) to record absolute positions too.
+
+    This helper deliberately does not return independent ``ScanAxis`` objects: polygon points are
+    correlated ``(x, y)`` pairs, not a rectangular product.
+    """
+    region = sample_region(sample, region_name)
+    axes = tuple(_region_value(region, "axes", ("piezo_x", "piezo_y")))
+    if len(axes) != 2:
+        raise ValueError("polygon region {!r} must define exactly two axes".format(region_name))
+    if axes != ("piezo_x", "piezo_y") and (x_motor is None or y_motor is None):
+        raise ValueError(
+            "region axes {} need explicit x_motor/y_motor; default motors support "
+            "('piezo_x', 'piezo_y')".format(axes))
+
+    position = sample.runnable_position()
+    center_x = getattr(position, axes[0], None)
+    center_y = getattr(position, axes[1], None)
+    if center_x is None or center_y is None:
+        raise ValueError("sample {!r} has no runnable center for region axes {}".format(
+            getattr(sample, "name", None), axes))
+
+    offsets, truncated = region_grid_offsets(region)
+    if truncated and not allow_truncated:
+        raise ValueError("polygon region {!r} generated too many points; increase max_points or "
+                         "coarsen grid spacing".format(region_name))
+    if not offsets:
+        raise ValueError("polygon region {!r} contains no grid points".format(region_name))
+
+    if x_motor is None:
+        x_motor = piezo.x                                           # noqa: F821
+    if y_motor is None:
+        y_motor = piezo.y                                           # noqa: F821
+
+    x_sig = Signal(name="x", value=0.0)                             # noqa: F821
+    y_sig = Signal(name="y", value=0.0)                             # noqa: F821
+    region_sig = Signal(name="region_name", value=str(region_name))  # noqa: F821
+    reads = list(reads or [])
+    point_reads = reads + [x_sig, y_sig, region_sig]
+
+    if name_tokens is None:
+        name_tokens = ("region{region_name}", "x{x}", "y{y}")
+    sample_name = fname(sample.name, *name_tokens)
+    if validate_tokens:
+        dummy_axes = [
+            ScanAxis("x", [], record=x_sig),
+            ScanAxis("y", [], record=y_sig),
+            ScanAxis("region", [], record=region_sig),
+        ]
+        validate_name_tokens(sample_name, dets=dets, reads=point_reads, axes=dummy_axes)
+
+    run_md = merge_md(
+        md,
+        sample.base_md() if hasattr(sample, "base_md") else getattr(sample, "md", {}),
+        {
+            "scan_region_name": region_name,
+            "scan_region_kind": _region_value(region, "kind", "polygon"),
+            "scan_region_axes": list(axes),
+            "scan_region_points": len(offsets),
+        },
+        _region_value(region, "md", {}),
+    )
+
+    def _body():
+        if setup is not None:
+            yield from setup()
+        yield from bps.mv(region_sig, str(region_name))
+        for dx, dy in offsets:
+            yield from bps.mv(
+                x_motor, float(center_x) + float(dx),
+                y_motor, float(center_y) + float(dy),
+                x_sig, float(dx),
+                y_sig, float(dy),
+            )
+            yield from bps.trigger_and_read(dedup_readables(list(dets) + point_reads))
+
+    if align is not None:
+        yield from align()
+    if goto:
+        yield from goto_sample(sample, skip={x_motor, y_motor})
+    if t is not None:
+        yield from det_exposure_time(t, t)                          # noqa: F821
+    return (yield from one_sample_run(
+        _body, dets, sample_name=sample_name, scan_name=scan_name,
+        geometry=geometry, md=run_md, baseline=baseline, reads=point_reads))
+
+
+def polygon_region_bar(samples, region_name, dets, *, reads=None, setup_for=None, align_for=None,
+                       geometry=None, scan_name="polygon_region", md=None, baseline_for=None,
+                       name_tokens=None, t=None, **kwargs):
+    """Run :func:`polygon_region_run` for each sample in ``samples``."""
+    for sample in samples:
+        setup = (lambda sample=sample: setup_for(sample)) if setup_for is not None else None
+        align = (lambda sample=sample: align_for(sample)) if align_for is not None else None
+        baseline = baseline_for(sample) if baseline_for is not None else None
+        yield from polygon_region_run(
+            sample, region_name, dets, reads=reads, setup=setup, align=align,
+            geometry=geometry, scan_name=scan_name, md=merge_md(md, getattr(sample, "md", {})),
+            baseline=baseline, name_tokens=name_tokens, t=t, **kwargs)
+
+
+def _region_value(region, key, default=None):
+    if isinstance(region, dict):
+        return region.get(key, default)
+    return getattr(region, key, default)
 
 
 # ===========================================================================
