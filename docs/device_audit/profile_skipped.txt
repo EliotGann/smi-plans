@@ -1,0 +1,20 @@
+Profile instances skipped during fake enumeration (no PVs harvested):
+
+  Bank1: import/fake failed: issubclass() arg 1 must be a class
+  Bank2: import/fake failed: issubclass() arg 1 must be a class
+  attenuators1: unknown module for class Bank1
+  attenuators2: unknown module for class Bank2
+  beam: non-literal/absent prefix
+  smi_waxs_detector: non-literal/absent prefix
+  smi_saxs_detector: non-literal/absent prefix
+  SMI: non-literal/absent prefix
+  ring: non-literal/absent prefix
+  fd: non-literal/absent prefix
+  client: non-literal/absent prefix
+  RE: non-literal/absent prefix
+  BEAM_DOWN: non-literal/absent prefix
+  susp_waxs_motor: non-literal/absent prefix
+  susp_phi_motor: non-literal/absent prefix
+  susp_xbpm3_sum: non-literal/absent prefix
+  susp_beam: non-literal/absent prefix
+  susp_smi_shutter: non-literal/absent prefix
