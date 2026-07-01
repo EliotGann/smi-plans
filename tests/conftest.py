@@ -24,15 +24,36 @@ import importlib
 
 import pytest
 
-pytest.importorskip("bluesky")
-pytest.importorskip("ophyd")
+# Beamline deps (bluesky/ophyd) power the simulated-device fixtures below.  Import them
+# tolerantly: when they are absent (e.g. a standalone checkout that only wants the pure-Python
+# tests such as tests/test_analysis.py), the module must still import so those tests collect --
+# the ``sim``/``inject`` fixtures skip instead of aborting the whole session.
+import numpy as np  # numpy is a hard dependency everywhere
+try:
+    import bluesky.plan_stubs as bps
+    import bluesky.preprocessors as bpp
+    import bluesky.plans as bp
+    from ophyd import Signal, Device, Component as Cpt
+    from ophyd.sim import SynAxis, SynSignal, motor, Syn2DGauss
+    _HAVE_BEAMLINE = True
+except Exception:  # bluesky/ophyd not installed -> beamline fixtures will skip
+    _HAVE_BEAMLINE = False
 
-import numpy as np
-import bluesky.plan_stubs as bps
-import bluesky.preprocessors as bpp
-import bluesky.plans as bp
-from ophyd import Signal, Device, Component as Cpt
-from ophyd.sim import SynAxis, SynSignal, motor, Syn2DGauss
+    class _Missing:
+        """Placeholder so the class definitions below import without bluesky/ophyd present.
+        Never instantiated: the ``sim`` fixture skips when ``_HAVE_BEAMLINE`` is False."""
+        def __init__(self, *a, **k):
+            pass
+
+        def __call__(self, *a, **k):
+            return self
+
+    bps = bpp = bp = motor = _Missing()
+    Signal = Device = SynAxis = SynSignal = Syn2DGauss = _Missing
+
+    def Cpt(*a, **k):
+        return None
+
 from collections import Counter
 
 
@@ -377,6 +398,8 @@ class RunResult(object):
 @pytest.fixture
 def sim():
     """A fresh simulated beamline (devices + helpers) for each test."""
+    if not _HAVE_BEAMLINE:
+        pytest.skip("beamline deps (bluesky/ophyd) not installed")
     return SimBeamline()
 
 

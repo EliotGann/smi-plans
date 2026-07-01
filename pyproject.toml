@@ -26,8 +26,11 @@ dependencies = []
 
 [project.optional-dependencies]
 beamline = ["bluesky", "ophyd", "numpy"]
-test = ["pytest", "bluesky", "ophyd", "numpy"]
-dev = ["pytest", "bluesky", "ophyd", "numpy", "ruff"]
+# The pf peak/edge analyzer (smi_plans.analysis): pure compute needs numpy+scipy; the
+# interactive figure needs bokeh; the db-backed pf() shell + its tests use pandas.
+analysis = ["numpy", "scipy", "bokeh", "pandas"]
+test = ["pytest", "bluesky", "ophyd", "numpy", "scipy", "bokeh", "pandas"]
+dev = ["pytest", "bluesky", "ophyd", "numpy", "scipy", "bokeh", "pandas", "ruff"]
 
 [project.urls]
 Homepage = "https://github.com/NSLS-II-SMI"

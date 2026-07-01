@@ -80,6 +80,14 @@ from ._lists import (  # noqa: F401  (pure python; redis imported lazily in from
     resolve_list,
 )
 
+# The peak/edge analyzer (pf).  Hard-imports only numpy; scipy/bokeh/databroker are lazy, so this
+# is safe to expose even off-beamline.  Guard anyway so a missing numpy never breaks the import.
+try:  # pragma: no cover
+    from . import analysis  # noqa: F401
+    from .analysis import pf, analyze_xy, PeakResult  # noqa: F401
+except Exception:  # pragma: no cover
+    analysis = None
+
 # The device-dependent modules import bluesky lazily; importing the package outside the
 # beamline env should still expose the sample model without exploding.
 try:  # pragma: no cover
@@ -121,6 +129,10 @@ __all__ = [
     "NamedList",
     "ListStore",
     "resolve_list",
+    "analysis",
+    "pf",
+    "analyze_xy",
+    "PeakResult",
     "_preprocessors",
     "_core",
     "_compose",
