@@ -47,11 +47,11 @@ Broader comparison against the profile-collection ``ps()`` helper is still pendi
 from __future__ import annotations
 
 import json
+import datetime as _dt
 import math
 import os
 import warnings
 from dataclasses import dataclass, field, asdict
-from datetime import datetime, timezone
 from typing import Optional, Sequence
 
 import numpy as np
@@ -679,7 +679,7 @@ def _resolve_xy_from_header(header, det="default", suffix="default", norm=None):
 # Latest-result publishing for persistent viewers
 # ===========================================================================================
 def _utc_now():
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return _dt.datetime.now(_dt.timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _full_config_key(key=PF_PUBLISH_KEY, prefix=PF_PUBLISH_PREFIX):
@@ -814,8 +814,7 @@ def pf(
     header = catalog[uid]
     start = header.start
     try:
-        import datetime
-        ts = datetime.datetime.fromtimestamp(start["time"]).strftime("%Y-%m-%d %H:%M:%S")
+        ts = _dt.datetime.fromtimestamp(start["time"]).strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
         ts = None
 
