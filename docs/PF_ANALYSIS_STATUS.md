@@ -1,6 +1,6 @@
 # PF Analysis Status
 
-Status: implemented and minimally live-validated.
+Status: implemented, minimally live-validated, and integrated with `smi-acquire`.
 
 `smi_plans.analysis.pf` is the quick peak/edge analysis helper intended to replace or complement
 the profile collection's `ps()` helper.  It returns a `PeakResult` and also exposes ps-style
@@ -39,14 +39,15 @@ the existing `ps()` workflow across representative scan types, detectors, and pl
 
 ## Publish latest result for persistent viewers
 
-`smi-acquire` now has a persistent Alignment-tab viewer that can render the latest `pf` result from
-Redis without querying Tiled or calling `pf` itself.  `pf` can now publish the latest result from
-the analysis/profile side.
+Complete. `smi-acquire` now has a persistent Alignment-tab viewer that renders the latest `pf`
+result from Redis without querying Tiled or calling `pf` itself. `pf(..., publish=True)` publishes
+the latest result from the analysis/profile side, and live integration with `smi-acquire` was
+confirmed on 2026-07-03.
 
 API:
 
 ```python
-pf(..., publish=True)
+pf(..., publish=True)   # default
 ```
 
 When `publish=True`, after computing the `PeakResult`, `pf` writes a JSON payload containing
@@ -82,3 +83,48 @@ from smi_plans.analysis import pf
 
 r = pf(-1, db=db, der=True, plot=False, publish=True)
 ```
+
+As of 2026-07-03, bare `pf()` defaults to `plot=False` and `publish=True`, so it reports in the
+terminal and updates the `smi-acquire` Alignment-tab viewer without opening a browser window.
+Publishing failures are reported but do not prevent `pf()` from returning the analysis result.
+
+## Next: baseline-level full width
+
+The current `fwhm` is intentionally a half-maximum metric, either from the fitted peak model or
+from model-free half-max crossings. That is not always the desired alignment quantity.
+
+For noisy profiles, double-humped profiles, and slit/beam-width work, the useful quantity is often
+the full contiguous support of the signal above baseline noise: the left and right edges where the
+profile rises out of the baseline/noise floor. This should be model-free and robust to non-Gaussian
+shape.
+
+Implemented additions to `PeakResult`:
+
+- `fw_base`: full width above baseline/noise floor.
+- `cen_base`: center of that full-width interval, `(left + right) / 2`.
+- `left_base` and `right_base`: baseline-threshold edge positions.
+- `baseline_noise`: robust noise estimate used to define the threshold.
+- `baseline_threshold`: `baseline + n_sigma * baseline_noise`.
+
+Implemented `pf`/`analyze_xy` options:
+
+```python
+r = pf(-1, db=db, baseline_sigma=3.0, baseline_merge_sigma=1.0, baseline_smooth=3)
+```
+
+Algorithm:
+
+1. Estimate baseline from the low-intensity tail of the profile, as `pf` already does.
+2. Estimate baseline noise robustly from points near baseline, for example with MAD scaled to sigma.
+3. Define a threshold: `baseline + baseline_sigma * baseline_noise`.
+4. Smooth or median-filter only for edge detection, not for reporting the raw data.
+5. Find all contiguous above-threshold regions.
+6. Choose the region containing the global peak, or merge nearby above-threshold islands when the
+   valley between them remains significantly above baseline. This handles double-humped beam
+   profiles as one physical width.
+7. Interpolate the left/right threshold crossings for sub-step edge positions.
+8. Report `fw_base = right_base - left_base` and `cen_base = (left_base + right_base) / 2`.
+
+For slit centering, `cen_base` is likely the quantity we want: it is the motor position that would
+exactly center the slit over the full measured beam support, rather than centering a Gaussian model
+on one lobe or reporting only the half-max width.

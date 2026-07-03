@@ -104,6 +104,12 @@ class PeakResult:
     # model-free cross-checks (always present)
     cen_halfmax: float = float("nan")
     fwhm_halfmax: float = float("nan")
+    left_base: float = float("nan")
+    right_base: float = float("nan")
+    cen_base: float = float("nan")
+    fw_base: float = float("nan")
+    baseline_noise: float = float("nan")
+    baseline_threshold: float = float("nan")
 
     # arrays (data + fit curve + bands)
     x: np.ndarray = field(default_factory=lambda: np.array([]), repr=False)
@@ -133,12 +139,13 @@ class PeakResult:
         """One-line human summary."""
         return (
             "scan {sid} | {mot} vs {det} | {kind}/{mdl} | "
-            "cen={cen:.5g}±{cerr:.2g} fwhm={fw:.4g} peak={pk:.5g} com={com:.5g} R²={r:.4f}"
+            "cen={cen:.5g}±{cerr:.2g} fwhm={fw:.4g} fw_base={fwb:.4g} "
+            "cen_base={cenb:.5g} peak={pk:.5g} com={com:.5g} R²={r:.4f}"
         ).format(
             sid=self.scan_id, mot=self.motor, det=self.detector,
             kind=self.profile_kind, mdl=self.model_name,
             cen=self.cen, cerr=self.cen_err, fw=self.fwhm,
-            pk=self.peak, com=self.com, r=self.r_squared,
+            fwb=self.fw_base, cenb=self.cen_base, pk=self.peak, com=self.com, r=self.r_squared,
         )
 
     def __repr__(self):
@@ -188,6 +195,16 @@ def _baseline(y):
     return float(np.median(np.sort(y)[:n]))
 
 
+def _mad_sigma(values):
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+    if len(values) == 0:
+        return float("nan")
+    med = np.median(values)
+    mad = np.median(np.abs(values - med))
+    return float(1.4826 * mad)
+
+
 def _refined_peak(x, y):
     """argmax with 3-point parabolic sub-step refinement (returns x at the vertex)."""
     i = int(np.argmax(y))
@@ -227,7 +244,115 @@ def _halfmax_crossings(x, y, base):
     return crossings
 
 
-def _model_free(x, y):
+def _smooth_for_edges(y, window=3):
+    """Small median smoother for threshold decisions only; reported arrays remain raw."""
+    y = np.asarray(y, dtype=float)
+    window = int(window or 1)
+    if window <= 1 or len(y) < 3:
+        return y
+    if window % 2 == 0:
+        window += 1
+    half = window // 2
+    padded = np.pad(y, (half, half), mode="edge")
+    return np.array([np.median(padded[i:i + window]) for i in range(len(y))])
+
+
+def _threshold_crossing(x0, y0, x1, y1, threshold):
+    if y1 == y0:
+        return float(x0)
+    frac = (threshold - y0) / (y1 - y0)
+    frac = float(np.clip(frac, 0.0, 1.0))
+    return float(x0 + frac * (x1 - x0))
+
+
+def _baseline_width(x, y, base, *, sigma=3.0, merge_sigma=1.0, smooth_window=3):
+    """Full contiguous beam support above baseline noise, robust to double-humped profiles.
+
+    The selected interval is the above-threshold island containing the global peak, expanded across
+    neighboring islands if the valley between them remains above a lower merge threshold.  This
+    keeps a double-humped but physically continuous beam profile as one width.
+    """
+    y = np.asarray(y, dtype=float)
+    x = np.asarray(x, dtype=float)
+    low_n = max(3, int(round(0.20 * len(y))))
+    low = np.sort(y)[:low_n]
+    noise = _mad_sigma(low)
+    if not np.isfinite(noise) or noise <= 0:
+        noise = float(np.std(low)) if len(low) else float("nan")
+    if not np.isfinite(noise) or noise <= 0:
+        # Last-resort floor avoids classifying perfectly flat synthetic data as wide.
+        noise = max(float(np.std(y)), 1e-12)
+    threshold = float(base + float(sigma) * noise)
+    merge_threshold = float(base + float(merge_sigma) * noise)
+    ys = _smooth_for_edges(y, smooth_window)
+    above = ys > threshold
+    if not np.any(above):
+        return dict(left_base=float("nan"), right_base=float("nan"), cen_base=float("nan"),
+                    fw_base=float("nan"), baseline_noise=noise, baseline_threshold=threshold)
+
+    regions = []
+    start = None
+    for i, ok in enumerate(above):
+        if ok and start is None:
+            start = i
+        elif not ok and start is not None:
+            regions.append([start, i - 1])
+            start = None
+    if start is not None:
+        regions.append([start, len(above) - 1])
+
+    peak_i = int(np.argmax(y))
+    selected = None
+    for region in regions:
+        if region[0] <= peak_i <= region[1]:
+            selected = region
+            break
+    if selected is None:
+        selected = max(regions, key=lambda r: np.max(y[r[0]:r[1] + 1]))
+
+    # Merge adjacent above-threshold islands when the separating valley is still above the lower
+    # baseline-noise threshold.  This handles double-humped profiles as one beam support.
+    changed = True
+    while changed:
+        changed = False
+        idx = regions.index(selected)
+        if idx > 0:
+            left = regions[idx - 1]
+            valley = ys[left[1] + 1:selected[0]]
+            if len(valley) and np.nanmin(valley) >= merge_threshold:
+                selected[0] = left[0]
+                regions.pop(idx - 1)
+                changed = True
+                continue
+        idx = regions.index(selected)
+        if idx < len(regions) - 1:
+            right = regions[idx + 1]
+            valley = ys[selected[1] + 1:right[0]]
+            if len(valley) and np.nanmin(valley) >= merge_threshold:
+                selected[1] = right[1]
+                regions.pop(idx + 1)
+                changed = True
+
+    li, ri = selected
+    if li > 0:
+        left = _threshold_crossing(x[li - 1], ys[li - 1], x[li], ys[li], threshold)
+    else:
+        left = float(x[li])
+    if ri < len(x) - 1:
+        right = _threshold_crossing(x[ri], ys[ri], x[ri + 1], ys[ri + 1], threshold)
+    else:
+        right = float(x[ri])
+    return dict(
+        left_base=left,
+        right_base=right,
+        cen_base=0.5 * (left + right),
+        fw_base=abs(right - left),
+        baseline_noise=noise,
+        baseline_threshold=threshold,
+    )
+
+
+def _model_free(x, y, *, baseline_sigma=3.0, baseline_merge_sigma=1.0, baseline_smooth=3):
     """All the model-free numbers in one pass.  Returns a dict."""
     base = _baseline(y)
     peak = _refined_peak(x, y)
@@ -239,7 +364,10 @@ def _model_free(x, y):
     else:
         cen_hm = float("nan")
         fwhm_hm = float("nan")
-    return dict(baseline=base, peak=peak, com=com, cen_halfmax=cen_hm, fwhm_halfmax=fwhm_hm)
+    bw = _baseline_width(x, y, base, sigma=baseline_sigma,
+                         merge_sigma=baseline_merge_sigma, smooth_window=baseline_smooth)
+    return dict(baseline=base, peak=peak, com=com, cen_halfmax=cen_hm, fwhm_halfmax=fwhm_hm,
+                **bw)
 
 
 def _looks_like_edge(x, y):
@@ -308,6 +436,9 @@ def analyze_xy(
     der: bool = False,
     model: str = "auto",
     smooth: bool = False,
+    baseline_sigma: float = 3.0,
+    baseline_merge_sigma: float = 1.0,
+    baseline_smooth: int = 3,
     **context,
 ):
     """Analyze a 1-D line profile.  Pure: no db, no plotting.
@@ -326,6 +457,13 @@ def analyze_xy(
         ``"none"`` (model-free only).  For peaks ``"auto"`` tries G/L/V and keeps the best AIC.
     smooth : bool
         Savitzky-Golay smooth before differentiating (tames noisy ``der``).
+    baseline_sigma : float
+        Threshold for full baseline-width support: ``baseline + baseline_sigma * noise``.
+    baseline_merge_sigma : float
+        Lower threshold used to merge nearby above-threshold islands into one double-humped beam
+        support.
+    baseline_smooth : int
+        Median-filter window used only for baseline-threshold edge decisions.
     **context
         Optional ``scan_id``/``uid``/``motor``/``detector``/``timestamp``/``normalized`` carried
         straight into the :class:`PeakResult`.
@@ -385,12 +523,20 @@ def analyze_xy(
         fit_err = yerr
 
     # ---- model-free numbers (always) ----
-    mf = _model_free(x, y)
+    mf = _model_free(x, y, baseline_sigma=baseline_sigma,
+                     baseline_merge_sigma=baseline_merge_sigma,
+                     baseline_smooth=baseline_smooth)
     res.baseline = mf["baseline"]
     res.peak = mf["peak"]
     res.com = mf["com"]
     res.cen_halfmax = mf["cen_halfmax"]
     res.fwhm_halfmax = mf["fwhm_halfmax"]
+    res.left_base = mf["left_base"]
+    res.right_base = mf["right_base"]
+    res.cen_base = mf["cen_base"]
+    res.fw_base = mf["fw_base"]
+    res.baseline_noise = mf["baseline_noise"]
+    res.baseline_threshold = mf["baseline_threshold"]
     # sensible defaults before any fit
     res.cen = mf["cen_halfmax"]
     res.fwhm = mf["fwhm_halfmax"]
@@ -750,12 +896,15 @@ def pf(
     der=False,
     model="auto",
     smooth=False,
-    plot=True,
+    baseline_sigma=3.0,
+    baseline_merge_sigma=1.0,
+    baseline_smooth=3,
+    plot=False,
     logy=False,
     show=True,
     db=None,
     return_figure=False,
-    publish=False,
+    publish=True,
     publish_client=None,
     publish_key=PF_PUBLISH_KEY,
     publish_prefix=PF_PUBLISH_PREFIX,
@@ -783,6 +932,10 @@ def pf(
         ``"auto"`` | ``"gaussian"`` | ``"lorentzian"`` | ``"voigt"`` | ``"erf"`` | ``"none"``.
     smooth : bool
         Savitzky-Golay smooth before differentiating.
+    baseline_sigma, baseline_merge_sigma, baseline_smooth
+        Controls for the model-free full width above baseline noise (``fw_base``) and its center
+        (``cen_base``).  Useful for noisy, flat-topped, or double-humped profiles and slit
+        centering.
     plot, show : bool
         Build / pop up the Bokeh figure.  The saved HTML path is printed as a headless fallback.
     logy : bool
@@ -823,6 +976,8 @@ def pf(
 
     result = analyze_xy(
         x, y, yerr=yerr, der=der, model=model, smooth=smooth,
+        baseline_sigma=baseline_sigma, baseline_merge_sigma=baseline_merge_sigma,
+        baseline_smooth=baseline_smooth,
         scan_id=start.get("scan_id"), uid=start.get("uid"),
         motor=motor, detector=det_name, timestamp=ts, normalized=normalized,
     )
@@ -833,27 +988,33 @@ def pf(
     pf.peak = result.peak
     pf.com = result.com
     pf.fwhm = result.fwhm
+    pf.fw_base = result.fw_base
+    pf.cen_base = result.cen_base
     pf.cen_err = result.cen_err
     pf.r_squared = result.r_squared
 
     print(result.summary())
 
     if publish:
-        payload = publish_pf_result(
-            result,
-            client=publish_client,
-            key=publish_key,
-            prefix=publish_prefix,
-            host=publish_host,
-            port=publish_port,
-            ssl=publish_ssl,
-            db=publish_db,
-            password=publish_password,
-            secret_path=publish_secret_path,
-            extra={"sample_name": start.get("sample_name") or start.get("sample")},
-        )
-        pf.published = payload
-        print("  published -> {}".format(_full_config_key(publish_key, publish_prefix)))
+        try:
+            payload = publish_pf_result(
+                result,
+                client=publish_client,
+                key=publish_key,
+                prefix=publish_prefix,
+                host=publish_host,
+                port=publish_port,
+                ssl=publish_ssl,
+                db=publish_db,
+                password=publish_password,
+                secret_path=publish_secret_path,
+                extra={"sample_name": start.get("sample_name") or start.get("sample")},
+            )
+            pf.published = payload
+            print("  published -> {}".format(_full_config_key(publish_key, publish_prefix)))
+        except Exception as exc:  # noqa: BLE001 - publishing must not hide the analysis result
+            pf.published = None
+            print("  (publish failed: {}: {})".format(type(exc).__name__, exc))
 
     fig = None
     if plot:
@@ -884,5 +1045,7 @@ pf.cen = float("nan")
 pf.peak = float("nan")
 pf.com = float("nan")
 pf.fwhm = float("nan")
+pf.fw_base = float("nan")
+pf.cen_base = float("nan")
 pf.cen_err = float("nan")
 pf.r_squared = float("nan")

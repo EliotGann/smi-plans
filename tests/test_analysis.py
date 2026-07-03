@@ -58,6 +58,8 @@ def test_gaussian_center_and_fwhm_recovered():
     assert r.r_squared > 0.97
     # uncertainty is finite and small
     assert np.isfinite(r.cen_err) and r.cen_err < 0.05
+    assert r.fw_base > r.fwhm
+    assert r.cen_base == pytest.approx(2.5, abs=0.08)
 
 
 def test_lorentzian_recovered_when_forced():
@@ -115,6 +117,25 @@ def test_model_free_only_still_gives_numbers():
     assert np.isfinite(r.peak)
     assert np.isfinite(r.com)
     assert np.isfinite(r.cen_halfmax)
+    assert np.isfinite(r.fw_base)
+    assert np.isfinite(r.cen_base)
+
+
+def test_baseline_width_handles_double_humped_profile():
+    x = np.linspace(-4.0, 4.0, 401)
+    sigma = 0.35
+    y = (
+        50.0
+        + 900.0 * np.exp(-((x + 0.8) ** 2) / (2 * sigma ** 2))
+        + 850.0 * np.exp(-((x - 0.8) ** 2) / (2 * sigma ** 2))
+        + 160.0 * np.exp(-(x ** 2) / (2 * 0.9 ** 2))
+    )
+    r = analyze_xy(x, y, model="auto", baseline_sigma=3.0, baseline_merge_sigma=1.0)
+
+    assert r.fw_base > r.fwhm
+    assert r.left_base < -1.0
+    assert r.right_base > 1.0
+    assert r.cen_base == pytest.approx(0.0, abs=0.1)
 
 
 # --------------------------------------------------------------------------- normalization path
@@ -190,7 +211,7 @@ def test_pf_against_fake_catalog():
     pytest.importorskip("pandas")
     x, y = gaussian_scan(cen=1.0, fwhm=0.25, noise=4.0)
     cat = _FakeCatalog(_FakeHeader(x, y, motor="piezo_th", det="pil2M"))
-    r = pf(-1, db=cat, plot=False)
+    r = pf(-1, db=cat, plot=False, publish=False)
     assert r.scan_id == 4242
     assert r.motor == "piezo_th"
     assert r.detector == "pil2M"
@@ -213,7 +234,7 @@ def test_pf_missing_detector_column_is_helpful():
 
     cat = _FakeCatalog(_BadHeader())
     with pytest.raises(KeyError) as exc:
-        pf(-1, db=cat, plot=False)
+        pf(-1, db=cat, plot=False, publish=False)
     assert "Available numeric columns" in str(exc.value)
 
 
@@ -222,7 +243,7 @@ def test_pf_normalization():
     x, y = gaussian_scan(cen=0.0, fwhm=0.3, noise=2.0)
     mon = np.full_like(y, 2.0)
     cat = _FakeCatalog(_FakeHeader(x, y, motor="m", det="pil2M", extra={"xbpm2_sumX": mon}))
-    r = pf(-1, db=cat, norm="xbpm2_sumX", plot=False)
+    r = pf(-1, db=cat, norm="xbpm2_sumX", plot=False, publish=False)
     assert r.normalized is True
     assert r.cen == pytest.approx(0.0, abs=0.03)
 
