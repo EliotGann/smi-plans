@@ -39,8 +39,9 @@ resolved).  The pure functions therefore import and test without bluesky/databro
 
 Status
 ------
-Automated synthetic-profile tests exist, but this has not yet been human-validated as a live
-beamline replacement for the profile-collection ``ps()`` helper.
+Automated synthetic-profile tests exist.  Minimal live validation from the ``bsui`` terminal on
+2026-07-03 confirmed ``pf(-1, db=db, der=True, plot=False)`` works for a real knife-edge scan.
+Broader comparison against the profile-collection ``ps()`` helper is still pending.
 """
 
 from __future__ import annotations
