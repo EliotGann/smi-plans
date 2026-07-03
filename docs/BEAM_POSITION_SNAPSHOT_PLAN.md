@@ -1,6 +1,22 @@
 # Beam Position Snapshot Plan
 
-Status: commissioning plan. No runtime code has been implemented here yet.
+Status: initial implementation complete in the SMI profile collection; waiting for broader in situ
+testing.
+
+Live implementation: `~/.ipython/profile_collection/src/smi_beamline/plans/beam_snapshot.py`.
+
+Minimal live testing on 2026-07-03 confirmed:
+
+- `save_beam_position_snapshot(...)` saves the current beam-positioning state to `mdsave`.
+- `list_beam_position_snapshots()` lists the saved snapshot index.
+- `restore_beam_position_snapshot(..., dry_run=True)` reports a selected changed motor as
+  `would move` without moving hardware.
+- `restore_beam_position_snapshot(..., dry_run=False)` restores a selected motor to the saved
+  snapshot value.
+- Bimorph restore uses the dedicated bimorph target/apply helpers, not motor-style moves.
+
+Unit coverage exists in the profile collection at `tests/unit/test_beam_snapshot.py` for save,
+compare, motor restore, and selected bimorph-channel restore behavior.
 
 ## Goal
 
@@ -54,6 +70,10 @@ The audit artifacts used here are in `docs/device_audit/`, especially `audit_mas
 | VDM voltage | Not found | No `vdm_voltage` coverage was found in the audit. |
 
 ## Proposed Architecture
+
+Implementation note, 2026-07-03: the first live implementation was placed in the profile
+collection as `smi_beamline.plans.beam_snapshot`, not in `smi_plans`, because it depends directly
+on live profile devices and `mdsave`.
 
 Implement this as a small beam-positioning snapshot service plus Bluesky plans. Do not put the
 core logic in GUI code.
@@ -176,6 +196,15 @@ Rules:
 - Require explicit confirmation for mirror voltages, DCM internals, and any coupled energy/undulator move.
 - Prefer setting high-level pseudo-positioners where they exist instead of independently writing coupled internals.
 
+Current profile-collection restore behavior:
+
+- Slit and mirror motors marked `restore=True` are restored with Bluesky `bps.mv`.
+- DCM, energy, undulator, and XBPM diagnostic axes are saved for comparison but are not restored.
+- Bimorph voltages are restored through `read_outputs()`, `set_targets(...)`, and
+  `apply_and_wait()`.
+- For partial bimorph restores, unselected channels are staged from current outputs before apply;
+  this avoids applying stale target values to unselected channels.
+
 Likely restore ordering for review with beamline staff:
 
 1. Slit gaps, then slit positions.
@@ -194,6 +223,10 @@ Likely restore ordering for review with beamline staff:
 - Should snapshots be stored only in Redis, or should every save also write a JSON artifact?
 
 ## Implementation Steps
+
+Status update, 2026-07-03: steps 2, 3, 4, 5, and a minimal selected-motor restore test are done in
+the profile collection. Remaining work is broader in situ validation across realistic beamline
+recovery cases, especially full-mirror bimorph restores and mixed motor/bimorph restore sequences.
 
 1. Confirm the open hardware naming questions during commissioning.
 2. Add `beam_snapshot.py` with registry, snapshot collection, diff formatting, validation, and restore plans.
