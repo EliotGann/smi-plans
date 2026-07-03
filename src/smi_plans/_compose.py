@@ -286,6 +286,47 @@ def _template_fields(template):
     return [m.split(".")[0].split("[")[0] for m in _TOKEN_FIELD_RE.findall(template or "")]
 
 
+_POSITION_TOKEN_SPECS = (
+    ("piezo_x", "x", "piezo", "x"),
+    ("piezo_y", "y", "piezo", "y"),
+    ("piezo_z", "z", "piezo", "z"),
+    ("piezo_th", "th", "piezo", "th"),
+    ("stage_x", "sx", "stage", "x"),
+    ("stage_y", "sy", "stage", "y"),
+    ("stage_z", "sz", "stage", "z"),
+    ("stage_theta", "stheta", "stage", "theta"),
+    ("stage_chi", "schi", "stage", "chi"),
+    ("stage_phi", "sphi", "stage", "phi"),
+)
+
+
+def _position_token_reads(fields):
+    """Live position readables needed for filename tokens such as ``{piezo_x}``."""
+    wanted = set(fields or [])
+    out = []
+    for field, _label, root_name, attr in _POSITION_TOKEN_SPECS:
+        if field not in wanted:
+            continue
+        root = globals().get(root_name)
+        dev = getattr(root, attr, None) if root is not None else None
+        if dev is not None:
+            out.append(dev)
+    return out
+
+
+def _sample_position_name_tokens(sample):
+    """Filename tokens for the coordinates a sample's runnable position actually sets."""
+    pos = sample.runnable_position() if hasattr(sample, "runnable_position") else None
+    tokens = []
+    for field, label, _root_name, _attr in _POSITION_TOKEN_SPECS:
+        value = getattr(pos, field, None) if pos is not None else None
+        if value is None:
+            value = getattr(sample, field, None)
+        if value is not None:
+            tokens.append("{}{{{}}}".format(label, field))
+    return tokens
+
+
 def _describe_keys(dev):
     """Best-effort recorded data keys for a readable: its ``describe()`` keys, or () if not
     describeable at build time (no live device / GUI-side construction)."""
@@ -469,6 +510,11 @@ def acquire(name, dets, axes, *, reads=None, setup=None, align=None, geometry=No
         name_tokens = toks
     sample_name = fname(name, *name_tokens)
 
+    for r in _position_token_reads(_template_fields(sample_name)):
+        if r not in reads and r not in axis_reads:
+            reads.append(r)
+    all_reads = reads + axis_reads
+
     # Fail fast on a filename token that can't resolve to a recorded key (else it surfaces as a
     # post-run KeyError in the file-naming/symlink step, after data is already taken).
     if validate_tokens:
@@ -523,10 +569,13 @@ def acquire_bar(samples, dets, axes_for, *, reads=None, setup_for=None, align_fo
         setup = (lambda s=s: setup_for(s)) if setup_for is not None else None
         align = (lambda s=s: align_for(s)) if align_for is not None else None
         baseline = baseline_for(s) if baseline_for is not None else None
+        sample_name_tokens = name_tokens
+        if sample_name_tokens is None and not axes:
+            sample_name_tokens = _sample_position_name_tokens(s)
         yield from acquire(
             s.name, dets, axes, reads=reads, setup=setup, align=align, geometry=geometry,
             scan_name=scan_name, md=merge_md(md, s.md), baseline=baseline,
-            name_tokens=name_tokens, check_order=check_order)
+            name_tokens=sample_name_tokens, check_order=check_order)
 
 
 def polygon_region_run(sample, region_name, dets, *, reads=None, x_motor=None, y_motor=None,

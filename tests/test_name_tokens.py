@@ -29,6 +29,16 @@ def _build(plan):
     next(iter(plan), None)
 
 
+def _primary_data_keys(result):
+    stream = {doc["uid"]: doc.get("name", "primary")
+              for name, doc in result.docs if name == "descriptor"}
+    keys = set()
+    for name, doc in result.docs:
+        if name == "event" and stream.get(doc["descriptor"]) == "primary":
+            keys.update(doc["data"])
+    return keys
+
+
 def test_bare_axis_token_x_is_rejected(sim, inject):
     """The classic bug: token {x} while only piezo_x is recorded -> build-time ValueError."""
     C = inject("smi_plans._compose")
@@ -85,3 +95,29 @@ def test_validate_tokens_false_escape_hatch(sim, inject):
                      [C.motor_axis("x", sim.piezo.x, [0, 100], record=True)],
                      reads=[sim.energy], name_tokens=["x{x}"], validate_tokens=False)
     _build(plan)  # no raise
+
+
+def test_position_filename_tokens_auto_read_motors(sim, inject):
+    """GUI bookmark names with {piezo_x}/{piezo_y} should not need explicit motor reads."""
+    C = inject("smi_plans._compose")
+    res = sim.run(C.acquire("S", [sim.pil900KW], [],
+                            name_tokens=("_x{piezo_x}_y{piezo_y}",)))
+    sim.assert_one_run(res)
+    keys = _primary_data_keys(res)
+    assert "piezo_x" in keys
+    assert "piezo_y" in keys
+
+
+def test_acquire_bar_no_axis_bookmarks_name_by_sample_position(sim, inject):
+    """A bookmark scan with no axes gets tokenized by runnable sample position automatically."""
+    C = inject("smi_plans._compose")
+    from smi_plans import SampleList
+
+    bar = SampleList.from_columns(names=["a", "b"], piezo_x=[1, 2], piezo_y=[3, 4])
+    res = sim.run(C.acquire_bar(bar, [sim.pil900KW], lambda s: []))
+    assert res.run_count() == (2, 2)
+    keys = _primary_data_keys(res)
+    assert "piezo_x" in keys
+    assert "piezo_y" in keys
+    sample_names = [doc["sample_name"] for name, doc in res.docs if name == "start"]
+    assert all("{piezo_x}" in name and "{piezo_y}" in name for name in sample_names)

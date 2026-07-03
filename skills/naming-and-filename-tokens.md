@@ -131,6 +131,38 @@ Tokens are only resolved post-run, so validate up front. Two cheap checks:
 - Is `foo` only in a non-primary stream (baseline/monitor) that the linker doesn't read? →
   record it in the primary stream.
 
+## GUI-generated bookmark scans
+
+For a simple bookmark scan that only moves to saved samples and takes one frame, generate:
+
+```python
+return (yield from acquire_bar(
+    bar, dets, axes_for,
+    scan_name="bookmark_scan",
+))
+```
+
+with `axes_for(s)` returning `[]`. Backend behavior:
+
+- `acquire_bar` calls `goto_sample(s)` before each run, using the sample's runnable `Position`.
+- With no scan axes and no explicit `name_tokens`, `acquire_bar` appends tokens for the saved
+  sample-position coordinates that are set, e.g. `x{piezo_x}` and `y{piezo_y}`.
+- `acquire` automatically adds those position motors to the primary-stream reads, so the tokens
+  resolve without the GUI needing to add `piezo.x`/`piezo.y` itself.
+
+If the GUI does provide an explicit position-bearing name, use real recorded keys:
+
+```python
+name_tokens=("x{piezo_x}", "y{piezo_y}")
+```
+
+not `{x}`/`{y}`. The backend will auto-read `piezo.x`/`piezo.y` for these tokens.
+
+Do not add detector sub-devices as extra reads when the parent detector is already in `dets`.
+For example, do **not** add `pil2M.motor` just to get `pil2M_motor_x` when `pil2M` is selected;
+`pil2M` already reports those keys, and reading both can produce `Data keys ... collide`.
+Prefer sample-position tokens (`{piezo_x}`, `{piezo_y}`, `{stage_phi}`, etc.) for bookmark names.
+
 ## Checklist (use on every plan that templates a filename)
 - [ ] Every `{token}` equals a real recorded data key (`Signal.name` or `<device>_<component>`),
       verified against `COMMON_TOKENS` or a sim dry-run — NOT an axis name.
