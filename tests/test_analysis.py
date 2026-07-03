@@ -7,6 +7,7 @@ env alike).  The db-backed shell (``pf``) is exercised with a tiny fake catalog.
 """
 import numpy as np
 import pytest
+import json
 
 pytest.importorskip("scipy")
 
@@ -224,3 +225,27 @@ def test_pf_normalization():
     r = pf(-1, db=cat, norm="xbpm2_sumX", plot=False)
     assert r.normalized is True
     assert r.cen == pytest.approx(0.0, abs=0.03)
+
+
+def test_pf_publish_writes_config_payload():
+    pytest.importorskip("pandas")
+    x, y = gaussian_scan(cen=1.0, fwhm=0.25, noise=4.0)
+    cat = _FakeCatalog(_FakeHeader(x, y, motor="piezo_th", det="pil2M"))
+    writes = {}
+
+    class _Client:
+        def set(self, key, value):
+            writes[key] = value
+
+    r = pf(-1, db=cat, plot=False, publish=True, publish_client=_Client())
+
+    assert r.scan_id == 4242
+    assert set(writes) == {"swaxsconfig:alignment.pf.latest"}
+    payload = json.loads(writes["swaxsconfig:alignment.pf.latest"])
+    assert payload["version"] == 1
+    assert payload["scan_id"] == 4242
+    assert payload["uid"] == "fake-uid"
+    assert payload["result"]["scan_id"] == 4242
+    assert payload["result"]["motor"] == "piezo_th"
+    assert len(payload["result"]["x"]) == len(x)
+    assert pf.published["scan_id"] == 4242

@@ -46,14 +46,21 @@ Broader comparison against the profile-collection ``ps()`` helper is still pendi
 
 from __future__ import annotations
 
+import json
 import math
+import os
 import warnings
 from dataclasses import dataclass, field, asdict
+from datetime import datetime, timezone
 from typing import Optional, Sequence
 
 import numpy as np
 
-__all__ = ["PeakResult", "analyze_xy", "make_figure", "pf"]
+__all__ = ["PeakResult", "analyze_xy", "make_figure", "pf", "publish_pf_result"]
+
+
+PF_PUBLISH_KEY = "alignment.pf.latest"
+PF_PUBLISH_PREFIX = "swaxsconfig"
 
 
 # ===========================================================================================
@@ -669,6 +676,70 @@ def _resolve_xy_from_header(header, det="default", suffix="default", norm=None):
 
 
 # ===========================================================================================
+# Latest-result publishing for persistent viewers
+# ===========================================================================================
+def _utc_now():
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _full_config_key(key=PF_PUBLISH_KEY, prefix=PF_PUBLISH_PREFIX):
+    prefix = str(prefix or "").rstrip(":")
+    return "{}:{}".format(prefix, key) if prefix else str(key)
+
+
+def _json_clean(value):
+    if isinstance(value, dict):
+        return {str(k): _json_clean(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_clean(v) for v in value]
+    if isinstance(value, np.ndarray):
+        return _json_clean(value.tolist())
+    if isinstance(value, np.generic):
+        return _json_clean(value.item())
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
+
+
+def _default_redis_client(*, host=None, port=6380, ssl=True, db=3, password=None,
+                          secret_path="/etc/bluesky/redis.secret"):
+    import redis
+
+    host = host or os.environ.get("SMI_ACQUIRE_REDIS_HOST", "xf12id2-smi-redis1.nsls2.bnl.gov")
+    if password is None:
+        with open(secret_path) as fh:
+            password = fh.read().strip()
+    return redis.Redis(host, db=db, ssl=ssl, port=port, password=password,
+                       socket_timeout=2, socket_connect_timeout=2)
+
+
+def publish_pf_result(result, *, client=None, key=PF_PUBLISH_KEY, prefix=PF_PUBLISH_PREFIX,
+                      host=None, port=6380, ssl=True, db=3, password=None,
+                      secret_path="/etc/bluesky/redis.secret", extra=None):
+    """Publish a :class:`PeakResult` JSON payload for persistent alignment viewers.
+
+    The default destination matches ``smi-acquire``'s operational config store:
+    Redis db=3, key ``swaxsconfig:alignment.pf.latest``.  Tests or alternate callers may pass any
+    mapping-like ``client`` that implements ``set(key, value)``.
+    """
+    payload = {
+        "version": 1,
+        "updated": _utc_now(),
+        "uid": result.uid,
+        "scan_id": result.scan_id,
+        "sample_name": None,
+        "result": _json_clean(result.as_dict(arrays=True)),
+    }
+    if extra:
+        payload.update(dict(extra))
+    full_key = _full_config_key(key, prefix)
+    target = client if client is not None else _default_redis_client(
+        host=host, port=port, ssl=ssl, db=db, password=password, secret_path=secret_path)
+    target.set(full_key, json.dumps(payload, sort_keys=True, allow_nan=False))
+    return payload
+
+
+# ===========================================================================================
 # The terminal shell:  pf(-1)
 # ===========================================================================================
 def pf(
@@ -684,6 +755,16 @@ def pf(
     show=True,
     db=None,
     return_figure=False,
+    publish=False,
+    publish_client=None,
+    publish_key=PF_PUBLISH_KEY,
+    publish_prefix=PF_PUBLISH_PREFIX,
+    publish_db=3,
+    publish_host=None,
+    publish_port=6380,
+    publish_ssl=True,
+    publish_password=None,
+    publish_secret_path="/etc/bluesky/redis.secret",
 ):
     """Quick friendly display + peak/edge fit of a scan (a web-ready ``ps`` replacement).
 
@@ -711,6 +792,12 @@ def pf(
         else a module/global ``db``.
     return_figure : bool
         Also return the Bokeh figure: returns ``(result, figure)``.
+    publish : bool
+        Publish the latest result for persistent viewers.  Writes JSON to Redis db=3 under
+        ``swaxsconfig:alignment.pf.latest`` by default, matching ``smi-acquire``'s config store.
+    publish_client : object, optional
+        Test/advanced hook: object with ``set(key, value)``.  If omitted and ``publish=True``, a
+        Redis client is opened lazily using the ``publish_*`` connection options.
 
     Returns
     -------
@@ -752,6 +839,23 @@ def pf(
 
     print(result.summary())
 
+    if publish:
+        payload = publish_pf_result(
+            result,
+            client=publish_client,
+            key=publish_key,
+            prefix=publish_prefix,
+            host=publish_host,
+            port=publish_port,
+            ssl=publish_ssl,
+            db=publish_db,
+            password=publish_password,
+            secret_path=publish_secret_path,
+            extra={"sample_name": start.get("sample_name") or start.get("sample")},
+        )
+        pf.published = payload
+        print("  published -> {}".format(_full_config_key(publish_key, publish_prefix)))
+
     fig = None
     if plot:
         fig = make_figure(result, logy=logy)
@@ -776,6 +880,7 @@ def pf(
 # back-compat attribute defaults (so `pf.cen` exists before the first call, like ps)
 pf.result = None
 pf.figure = None
+pf.published = None
 pf.cen = float("nan")
 pf.peak = float("nan")
 pf.com = float("nan")
