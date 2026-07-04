@@ -12,7 +12,7 @@ import json
 pytest.importorskip("scipy")
 
 from smi_plans.analysis import (
-    analyze_xy, make_figure, PeakResult, pf,
+    analyze_xy, make_figure, PeakResult, pf, LivePF,
     _gaussian, _lorentzian, _erf_step, _looks_like_edge,
 )
 
@@ -300,3 +300,50 @@ def test_pf_publish_writes_config_payload():
     assert payload["result"]["motor"] == "piezo_th"
     assert len(payload["result"]["x"]) == len(x)
     assert pf.published["scan_id"] == 4242
+
+
+def test_live_pf_callback_publishes_incremental_payload():
+    x, y = gaussian_scan(cen=1.0, fwhm=0.25, noise=0.0, n=9)
+    writes = {}
+
+    class _Client:
+        def set(self, key, value):
+            writes[key] = value
+
+    cb = LivePF(publish_client=_Client(), print_summary=False)
+    start = {
+        "scan_id": 4242, "uid": "fake-uid", "time": 1_700_000_000.0,
+        "motors": ["bdm_y"], "detectors": ["pil2M"],
+    }
+    descriptor = {
+        "uid": "desc", "name": "primary",
+        "data_keys": {"bdm_y_readback": {}, "pil2M_stats1_total": {}},
+    }
+    cb("start", start)
+    cb("descriptor", descriptor)
+    for xi, yi in zip(x, y):
+        cb("event", {"descriptor": "desc", "data": {"bdm_y_readback": xi,
+                                                       "pil2M_stats1_total": yi}})
+    cb("stop", {"exit_status": "success"})
+
+    assert cb.result.cen == pytest.approx(1.0, abs=0.05)
+    assert set(writes) == {"swaxsconfig:alignment.pf.live"}
+    payload = json.loads(writes["swaxsconfig:alignment.pf.live"])
+    assert payload["live"] is True
+    assert payload["final"] is True
+    assert payload["num_points"] == len(x)
+    assert payload["result"]["motor"] == "bdm_y"
+
+
+def test_live_pf_callback_can_be_run_without_publishing():
+    x, y = erf_scan(cen=0.0, k=10.0, amp=-500.0, noise=0.0, n=11)
+    cb = LivePF(der=True, publish=False, print_summary=False)
+    cb("start", {"scan_id": 1, "uid": "u", "time": 1_700_000_000.0,
+                 "motors": ["m"], "detectors": ["pil2M"]})
+    cb("descriptor", {"uid": "desc", "name": "primary",
+                      "data_keys": {"m": {}, "pil2M_stats1_total": {}}})
+    for xi, yi in zip(x, y):
+        cb("event", {"descriptor": "desc", "data": {"m": xi,
+                                                       "pil2M_stats1_total": yi}})
+    assert cb.result.amplitude < 0
+    assert cb.result.cen == pytest.approx(0.0, abs=0.08)

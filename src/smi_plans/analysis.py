@@ -56,10 +56,11 @@ from typing import Optional, Sequence
 
 import numpy as np
 
-__all__ = ["PeakResult", "analyze_xy", "make_figure", "pf", "publish_pf_result"]
+__all__ = ["PeakResult", "analyze_xy", "make_figure", "pf", "LivePF", "publish_pf_result"]
 
 
 PF_PUBLISH_KEY = "alignment.pf.latest"
+PF_LIVE_PUBLISH_KEY = "alignment.pf.live"
 PF_PUBLISH_PREFIX = "swaxsconfig"
 
 
@@ -791,6 +792,16 @@ def _intensity_field(header, det, suffix):
     return det0 + suffix, det0
 
 
+def _motor_field_from_columns(motor, columns):
+    """Resolve a motor name to the column/event key used for its live readback."""
+    if motor in columns:
+        return motor
+    for candidate in (motor + "_readback", motor + "_setpoint", motor + "_user_setpoint"):
+        if candidate in columns:
+            return candidate
+    return motor
+
+
 def _resolve_xy_from_header(header, det="default", suffix="default", norm=None):
     """Return (x, y, yerr, motor_name, det_name) from a databroker header.
 
@@ -799,15 +810,10 @@ def _resolve_xy_from_header(header, det="default", suffix="default", norm=None):
     table = header.table()
     start = header.start
     motor = start["motors"][0]
-    motor_field = motor
+    motor_field = _motor_field_from_columns(motor, table.columns)
 
     intensity_field, det_name = _intensity_field(header, det, suffix)
 
-    if motor_field not in table.columns:
-        for candidate in (motor + "_readback", motor + "_setpoint", motor + "_user_setpoint"):
-            if candidate in table.columns:
-                motor_field = candidate
-                break
     if motor_field not in table.columns:
         raise KeyError(
             "motor column {!r} not in the scan table. Available numeric columns: {}".format(
@@ -902,6 +908,234 @@ def publish_pf_result(result, *, client=None, key=PF_PUBLISH_KEY, prefix=PF_PUBL
         host=host, port=port, ssl=ssl, db=db, password=password, secret_path=secret_path)
     target.set(full_key, json.dumps(payload, sort_keys=True, allow_nan=False))
     return payload
+
+
+# ===========================================================================================
+# Live RunEngine callback: analyze documents as they are emitted
+# ===========================================================================================
+class LivePF:
+    """Bluesky document callback that publishes live :func:`pf`-style analysis.
+
+    This object does not subscribe itself.  Pass an instance directly to a single RunEngine call,
+    for example ``RE(plan(), LivePF(der=True, det="pil2M"))``, or subscribe/unsubscribe it using
+    the RunEngine APIs during testing.
+    """
+
+    def __init__(
+        self,
+        det="default",
+        suffix="default",
+        norm=None,
+        der=False,
+        model="auto",
+        smooth=False,
+        baseline_sigma=3.0,
+        baseline_merge_sigma=1.0,
+        baseline_smooth=3,
+        min_points=None,
+        every=1,
+        stream="primary",
+        publish=True,
+        publish_client=None,
+        publish_key=PF_LIVE_PUBLISH_KEY,
+        publish_prefix=PF_PUBLISH_PREFIX,
+        publish_db=3,
+        publish_host=None,
+        publish_port=6380,
+        publish_ssl=True,
+        publish_password=None,
+        publish_secret_path="/etc/bluesky/redis.secret",
+        print_summary=True,
+    ):
+        self.det = det
+        self.suffix = suffix
+        self.norm = norm
+        self.der = der
+        self.model = model
+        self.smooth = smooth
+        self.baseline_sigma = baseline_sigma
+        self.baseline_merge_sigma = baseline_merge_sigma
+        self.baseline_smooth = baseline_smooth
+        self.min_points = int(min_points or (5 if der else 3))
+        self.every = max(1, int(every or 1))
+        self.stream = stream
+        self.publish = publish
+        self.publish_client = publish_client
+        self.publish_key = publish_key
+        self.publish_prefix = publish_prefix
+        self.publish_db = publish_db
+        self.publish_host = publish_host
+        self.publish_port = publish_port
+        self.publish_ssl = publish_ssl
+        self.publish_password = publish_password
+        self.publish_secret_path = publish_secret_path
+        self.print_summary = print_summary
+
+        self.result = None
+        self.published = None
+        self.start_doc = None
+        self.descriptor_uid = None
+        self.motor = None
+        self.motor_field = None
+        self.detector = None
+        self.intensity_field = None
+        self.norm_field = None
+        self.x = []
+        self.y = []
+        self.yerr = []
+        self._event_count = 0
+        self._redis_client = None
+
+    def __call__(self, name, doc):
+        if name == "start":
+            self.start(doc)
+        elif name == "descriptor":
+            self.descriptor(doc)
+        elif name == "event":
+            self.event(doc)
+        elif name == "stop":
+            self.stop(doc)
+
+    def start(self, doc):
+        self.result = None
+        self.published = None
+        self.start_doc = doc
+        self.descriptor_uid = None
+        self.motor = (doc.get("motors") or [None])[0]
+        self.motor_field = None
+        self.detector = None
+        self.intensity_field = None
+        self.norm_field = self.norm
+        self.x = []
+        self.y = []
+        self.yerr = []
+        self._event_count = 0
+
+    def descriptor(self, doc):
+        if doc.get("name", "primary") != self.stream:
+            return
+        data_keys = doc.get("data_keys", {})
+        columns = set(data_keys)
+        start = self.start_doc or {}
+        det0 = (start.get("detectors") or [None])[0] if self.det == "default" else self.det
+
+        if self.motor is None:
+            self.motor = (start.get("motors") or [None])[0]
+        if self.motor is not None:
+            self.motor_field = _motor_field_from_columns(self.motor, columns)
+        if self.motor_field not in columns:
+            return
+
+        if det0 is None:
+            return
+        if det0 == "elm" and self.suffix == "default":
+            intensity_field = "elm_sum_all"
+        elif det0 == "elm":
+            intensity_field = "elm" + self.suffix
+        elif self.suffix == "default":
+            intensity_field = det0 + "_stats1_total"
+        else:
+            intensity_field = det0 + self.suffix
+        if intensity_field not in columns:
+            return
+        if self.norm_field is not None and self.norm_field not in columns:
+            return
+
+        self.descriptor_uid = doc.get("uid")
+        self.detector = det0
+        self.intensity_field = intensity_field
+
+    def event(self, doc):
+        if self.descriptor_uid is None or doc.get("descriptor") != self.descriptor_uid:
+            return
+        data = doc.get("data", {})
+        try:
+            x = float(data[self.motor_field])
+            y_raw = float(data[self.intensity_field])
+        except Exception:
+            return
+        if not (np.isfinite(x) and np.isfinite(y_raw)):
+            return
+
+        yerr = math.sqrt(max(abs(y_raw), 1.0))
+        y = y_raw
+        if self.norm_field is not None:
+            try:
+                monitor = float(data[self.norm_field])
+            except Exception:
+                return
+            if not np.isfinite(monitor) or monitor == 0:
+                return
+            rel = math.sqrt((yerr / max(abs(y_raw), 1.0)) ** 2
+                            + (math.sqrt(max(abs(monitor), 1.0)) / monitor) ** 2)
+            y = y_raw / monitor
+            yerr = abs(y) * rel
+
+        self.x.append(x)
+        self.y.append(y)
+        self.yerr.append(yerr)
+        self._event_count += 1
+        if len(self.x) < self.min_points or self._event_count % self.every:
+            return
+        self.update(final=False)
+
+    def stop(self, doc):
+        if len(self.x) >= self.min_points:
+            self.update(final=True, stop_doc=doc)
+
+    def update(self, final=False, stop_doc=None):
+        start = self.start_doc or {}
+        try:
+            ts = _dt.datetime.fromtimestamp(start["time"]).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            ts = None
+        result = analyze_xy(
+            np.asarray(self.x), np.asarray(self.y), yerr=np.asarray(self.yerr),
+            der=self.der, model=self.model, smooth=self.smooth,
+            baseline_sigma=self.baseline_sigma, baseline_merge_sigma=self.baseline_merge_sigma,
+            baseline_smooth=self.baseline_smooth,
+            scan_id=start.get("scan_id"), uid=start.get("uid"),
+            motor=self.motor, detector=self.detector, timestamp=ts,
+            normalized=self.norm_field is not None,
+        )
+        self.result = result
+        if self.publish:
+            extra = {
+                "live": True,
+                "final": bool(final),
+                "num_points": len(self.x),
+                "sample_name": start.get("sample_name") or start.get("sample"),
+            }
+            if stop_doc is not None:
+                extra["exit_status"] = stop_doc.get("exit_status")
+            try:
+                client = self.publish_client
+                if client is None:
+                    if self._redis_client is None:
+                        self._redis_client = _default_redis_client(
+                            host=self.publish_host,
+                            port=self.publish_port,
+                            ssl=self.publish_ssl,
+                            db=self.publish_db,
+                            password=self.publish_password,
+                            secret_path=self.publish_secret_path,
+                        )
+                    client = self._redis_client
+                self.published = publish_pf_result(
+                    result,
+                    client=client,
+                    key=self.publish_key,
+                    prefix=self.publish_prefix,
+                    extra=extra,
+                )
+            except Exception as exc:  # noqa: BLE001 - live analysis must not interrupt scans
+                self.published = None
+                if self.print_summary:
+                    print("  (live pf publish failed: {}: {})".format(type(exc).__name__, exc))
+        if self.print_summary:
+            print("live pf ({}/{} pts): {}".format(
+                "final" if final else "live", len(self.x), result.summary()))
+        return result
 
 
 # ===========================================================================================

@@ -89,7 +89,7 @@ from ._lists import (  # noqa: F401  (pure python; redis imported lazily in from
 # is safe to expose even off-beamline.  Guard anyway so a missing numpy never breaks the import.
 try:  # pragma: no cover
     from . import analysis  # noqa: F401
-    from .analysis import pf, analyze_xy, PeakResult  # noqa: F401
+    from .analysis import pf, analyze_xy, PeakResult, LivePF  # noqa: F401
 except Exception:  # pragma: no cover
     analysis = None
 
@@ -141,6 +141,7 @@ __all__ = [
     "pf",
     "analyze_xy",
     "PeakResult",
+    "LivePF",
     "_preprocessors",
     "_core",
     "_compose",
