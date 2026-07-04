@@ -523,10 +523,19 @@ def analyze_xy(
         fit_err = yerr
 
     # ---- model-free numbers (always) ----
-    mf = _model_free(x, y, baseline_sigma=baseline_sigma,
+    # A falling edge has a negative derivative peak.  Use an inverted copy for model-free peak
+    # finding/seeding so PEAK/CEN/COM point at the trough while the fit still uses original y.
+    peak_polarity = 1.0
+    if der:
+        y_mid = float(np.median(y))
+        if (y_mid - float(np.min(y))) > (float(np.max(y)) - y_mid):
+            peak_polarity = -1.0
+    peak_y = peak_polarity * y
+
+    mf = _model_free(x, peak_y, baseline_sigma=baseline_sigma,
                      baseline_merge_sigma=baseline_merge_sigma,
                      baseline_smooth=baseline_smooth)
-    res.baseline = mf["baseline"]
+    res.baseline = mf["baseline"] / peak_polarity
     res.peak = mf["peak"]
     res.com = mf["com"]
     res.cen_halfmax = mf["cen_halfmax"]
@@ -536,7 +545,7 @@ def analyze_xy(
     res.cen_base = mf["cen_base"]
     res.fw_base = mf["fw_base"]
     res.baseline_noise = mf["baseline_noise"]
-    res.baseline_threshold = mf["baseline_threshold"]
+    res.baseline_threshold = mf["baseline_threshold"] / peak_polarity
     # sensible defaults before any fit
     res.cen = mf["cen_halfmax"]
     res.fwhm = mf["fwhm_halfmax"]
@@ -559,7 +568,7 @@ def analyze_xy(
     cen0 = mf["cen_halfmax"]
     if not np.isfinite(cen0):
         cen0 = mf["peak"]
-    base0 = mf["baseline"]
+    base0 = mf["baseline"] / peak_polarity
     dx_total = abs(x[-1] - x[0]) or 1.0
 
     best = None
@@ -583,7 +592,11 @@ def analyze_xy(
                             if k and np.isfinite(best["perr"][2]) else float("nan"))
     else:
         sigma0 = max(width0 / _GAUSS_FWHM, 1e-6)
-        amp0 = max(span, 1e-9)
+        amp0 = peak_polarity * max(span, 1e-9)
+        amp_abs0 = abs(amp0)
+        amp_low = -10 * amp_abs0 - 1 if der else 0.0
+        amp_high = 10 * amp_abs0 + 1
+        base_high = np.max(y) + span if der else np.max(y)
         candidates = {"gaussian": _gaussian, "lorentzian": _lorentzian, "voigt": _voigt}
         if model in candidates:
             candidates = {model: candidates[model]}
@@ -591,16 +604,16 @@ def analyze_xy(
         for name, func in candidates.items():
             if name == "gaussian":
                 p0 = [amp0, cen0, sigma0, base0]
-                bounds = ([0, x[0], 1e-9, np.min(y) - span],
-                          [10 * amp0 + 1, x[-1], 10 * dx_total, np.max(y)])
+                bounds = ([amp_low, x[0], 1e-9, np.min(y) - span],
+                          [amp_high, x[-1], 10 * dx_total, base_high])
             elif name == "lorentzian":
                 p0 = [amp0, cen0, max(width0 / 2, 1e-6), base0]
-                bounds = ([0, x[0], 1e-9, np.min(y) - span],
-                          [10 * amp0 + 1, x[-1], 10 * dx_total, np.max(y)])
+                bounds = ([amp_low, x[0], 1e-9, np.min(y) - span],
+                          [amp_high, x[-1], 10 * dx_total, base_high])
             else:  # voigt
                 p0 = [amp0, cen0, sigma0, max(width0 / 4, 1e-6), base0]
-                bounds = ([0, x[0], 1e-9, 1e-9, np.min(y) - span],
-                          [10 * amp0 + 1, x[-1], 10 * dx_total, 10 * dx_total, np.max(y)])
+                bounds = ([amp_low, x[0], 1e-9, 1e-9, np.min(y) - span],
+                          [amp_high, x[-1], 10 * dx_total, 10 * dx_total, base_high])
             fit = _fit_one(func, x, y, p0, fit_err, bounds)
             if fit is not None:
                 fit["name"] = name
@@ -786,10 +799,16 @@ def _resolve_xy_from_header(header, det="default", suffix="default", norm=None):
     table = header.table()
     start = header.start
     motor = start["motors"][0]
+    motor_field = motor
 
     intensity_field, det_name = _intensity_field(header, det, suffix)
 
-    if motor not in table.columns:
+    if motor_field not in table.columns:
+        for candidate in (motor + "_readback", motor + "_setpoint", motor + "_user_setpoint"):
+            if candidate in table.columns:
+                motor_field = candidate
+                break
+    if motor_field not in table.columns:
         raise KeyError(
             "motor column {!r} not in the scan table. Available numeric columns: {}".format(
                 motor, _numeric_columns(table)))
@@ -799,7 +818,7 @@ def _resolve_xy_from_header(header, det="default", suffix="default", norm=None):
             "  -> pass det=/suffix= explicitly.  Available numeric columns: {}".format(
                 intensity_field, det_name, _numeric_columns(table)))
 
-    x = table[motor].to_numpy(dtype=float)
+    x = table[motor_field].to_numpy(dtype=float)
     y = table[intensity_field].to_numpy(dtype=float)
     yerr = np.sqrt(np.clip(np.abs(y), 1.0, None))   # Poisson on raw counts
     normalized = False

@@ -95,6 +95,16 @@ def test_derivative_of_edge_is_a_peak():
     assert r.cen == pytest.approx(0.2, abs=0.05)
 
 
+def test_derivative_of_falling_edge_fits_negative_peak():
+    x, y = erf_scan(cen=-0.15, k=10.0, amp=-500.0, noise=2.0)
+    r = analyze_xy(x, y, der=True, model="auto")
+    assert r.derivative is True
+    assert r.profile_kind == "peak"
+    assert r.model_name in ("gaussian", "lorentzian", "voigt")
+    assert r.amplitude < 0
+    assert r.cen == pytest.approx(-0.15, abs=0.05)
+
+
 # --------------------------------------------------------------------------- baseline / COM
 def test_com_is_baseline_corrected():
     # gaussian peak sitting on a big flat background, in an ASYMMETRIC window (peak near the
@@ -219,6 +229,26 @@ def test_pf_against_fake_catalog():
     # ps-style attributes set on the function
     assert pf.cen == pytest.approx(1.0, abs=0.03)
     assert np.isfinite(pf.fwhm)
+
+
+def test_pf_uses_motor_readback_when_motor_column_is_absent():
+    pytest.importorskip("pandas")
+    import pandas as pd
+
+    x, y = gaussian_scan(cen=1.0, fwhm=0.25, noise=4.0)
+
+    class _ReadbackHeader:
+        start = {
+            "scan_id": 4242, "uid": "fake-uid", "time": 1_700_000_000.0,
+            "motors": ["bdm_y"], "detectors": ["pil2M"],
+        }
+
+        def table(self):
+            return pd.DataFrame({"bdm_y_readback": x, "pil2M_stats1_total": y})
+
+    r = pf(-1, db=_FakeCatalog(_ReadbackHeader()), plot=False, publish=False)
+    assert r.motor == "bdm_y"
+    assert r.cen == pytest.approx(1.0, abs=0.03)
 
 
 def test_pf_missing_detector_column_is_helpful():
