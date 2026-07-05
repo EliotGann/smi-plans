@@ -97,6 +97,7 @@ except Exception:  # pragma: no cover
 # beamline env should still expose the sample model without exploding.
 try:  # pragma: no cover
     from . import _preprocessors, _core, _compose  # noqa: F401
+    from ._core import ramp_count  # noqa: F401
 except Exception:  # pragma: no cover
     _preprocessors = None
     _core = None
@@ -142,6 +143,7 @@ __all__ = [
     "analyze_xy",
     "PeakResult",
     "LivePF",
+    "ramp_count",
     "_preprocessors",
     "_core",
     "_compose",

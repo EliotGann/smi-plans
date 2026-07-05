@@ -71,6 +71,7 @@ __all__ = [
     "merge_md",
     "dedup_readables",
     "stageable_reads",
+    "ramp_count",
 ]
 
 
@@ -362,6 +363,143 @@ def declare_saxs_waxs_streams(saxs_det=None, waxs_det=None):
     wdet = waxs_det if waxs_det is not None else pil900KW        # noqa: F821
     yield from bps.declare_stream(wdet, name="waxs")
     yield from bps.declare_stream(sdet, name="saxs")
+
+
+# ---------------------------------------------------------------------------
+# Software-timed ramp scan
+# ---------------------------------------------------------------------------
+def ramp_count(dets, motor, start, stop, *, velocity=None, exposure=None, period=None,
+               reads=None, md=None, stream="primary", num=None, include_motor=True,
+               velocity_signal=None, restore_velocity=True):
+    """Move ``motor`` at constant velocity while repeatedly triggering detectors.
+
+    This is a software-timed alignment helper, not a hardware-synchronized flyer.  It is intended
+    for live feedback workflows such as ``RE(ramp_count(...), LivePF(der=True))`` where each
+    point is analyzed as it is emitted.
+
+    Parameters
+    ----------
+    dets : sequence
+        Detectors to stage and trigger, e.g. ``[pil2M]``.
+    motor : movable/readable
+        Motor to ramp.  It should expose a ``.velocity`` signal when ``velocity`` is supplied.
+    start, stop : float
+        Absolute motor positions.  The plan moves to ``start`` first, then begins the ramp to
+        ``stop`` without waiting, acquiring until the move completes.
+    velocity : float, optional
+        Temporary motor velocity for the ramp.  The original velocity is restored at the end unless
+        ``restore_velocity=False``.
+    exposure : float, optional
+        If supplied, calls the beamline ``det_exposure_time(exposure, period_or_exposure)`` helper
+        before staging/acquiring.
+    period : float, optional
+        Software delay between successive ``trigger_and_read`` calls.  If omitted and ``exposure``
+        is supplied, the detector period passed to ``det_exposure_time`` is ``exposure`` and no
+        additional sleep is inserted between reads.
+    reads : sequence, optional
+        Extra readbacks to include in each event, e.g. ``[xbpm2]``.  ``motor`` is included by
+        default so live callbacks and filename tokens have the ramp coordinate.
+    md : dict, optional
+        Additional run metadata.
+    stream : str
+        Event stream name, default ``"primary"``.
+    num : int, optional
+        Optional maximum number of trigger/read points.  If reached before the motor arrives, the
+        plan stops acquiring and waits for the move to complete.
+    include_motor : bool
+        Include ``motor`` in each event's read list.  Leave this true for :class:`LivePF`.
+    velocity_signal : signal, optional
+        Override for the velocity signal.  Defaults to ``motor.velocity``.
+    restore_velocity : bool
+        Restore the original velocity in a cleanup block after success or abort.
+    """
+    if bps is None or bpp is None:  # pragma: no cover - importable off-beamline, runnable live
+        raise RuntimeError("ramp_count requires bluesky in the active environment")
+
+    dets = list(dets or [])
+    reads = list(reads or [])
+    if include_motor:
+        reads.append(motor)
+    point_reads = dedup_readables(dets + reads)
+    to_stage = _stage_devices_for_read(dets, reads)
+
+    motor_name = getattr(motor, "name", "motor")
+    det_names = [getattr(d, "name", str(d)) for d in dets]
+    run_md = merge_md(
+        {
+            "plan_name": "ramp_count",
+            "scan_name": "ramp_count",
+            "motors": [motor_name],
+            "detectors": det_names,
+            "hints": {"dimensions": [([motor_name], stream)]},
+            "ramp_count": {
+                "motor": motor_name,
+                "start": start,
+                "stop": stop,
+                "velocity": velocity,
+                "exposure": exposure,
+                "period": period,
+            },
+        },
+        md,
+    )
+
+    if velocity is not None:
+        velocity_signal = velocity_signal if velocity_signal is not None else getattr(motor, "velocity", None)
+        if velocity_signal is None:
+            raise ValueError("velocity was supplied, but motor {!r} has no .velocity signal".format(motor_name))
+
+    detector_period = exposure if period is None else period
+    sleep_period = 0.0 if period is None else float(period)
+    max_points = None if num is None else int(num)
+    state = {"original_velocity": None, "move_status": None}
+
+    def _cleanup():
+        status = state.get("move_status")
+        if status is not None and not getattr(status, "done", False) and callable(getattr(motor, "stop", None)):
+            yield from bps.stop(motor)
+        if restore_velocity and velocity is not None and state["original_velocity"] is not None:
+            yield from bps.mv(velocity_signal, state["original_velocity"])
+
+    def _body():
+        if exposure is not None:
+            try:
+                exposure_plan = det_exposure_time  # noqa: F821 - injected by the profile
+            except NameError as exc:
+                raise RuntimeError(
+                    "exposure was supplied, but det_exposure_time is not available"
+                ) from exc
+            yield from exposure_plan(exposure, detector_period)
+
+        if velocity is not None:
+            state["original_velocity"] = yield from bps.rd(velocity_signal)
+            yield from bps.mv(velocity_signal, velocity)
+
+        yield from bps.mv(motor, start)
+
+        @bpp.stage_decorator(to_stage)
+        @bpp.run_decorator(md=run_md)
+        def _scan():
+            group = "ramp_count_move"
+            status = yield from bps.abs_set(motor, stop, group=group, wait=False)
+            state["move_status"] = status
+            n = 0
+            try:
+                while not getattr(status, "done", False):
+                    if max_points is not None and n >= max_points:
+                        break
+                    yield from bps.trigger_and_read(point_reads, name=stream)
+                    n += 1
+                    if sleep_period > 0:
+                        yield from bps.sleep(sleep_period)
+                if max_points is None or n < max_points:
+                    yield from bps.trigger_and_read(point_reads, name=stream)
+            finally:
+                yield from bps.wait(group=group)
+
+        yield from _scan()
+
+    return (yield from bpp.finalize_wrapper(_body(), _cleanup()))
 
 
 # ---------------------------------------------------------------------------
