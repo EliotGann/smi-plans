@@ -370,7 +370,7 @@ def declare_saxs_waxs_streams(saxs_det=None, waxs_det=None):
 # ---------------------------------------------------------------------------
 def ramp_count(dets, motor, start, stop, *, velocity=None, exposure=None, period=None,
                reads=None, md=None, stream="primary", num=None, include_motor=True,
-               velocity_signal=None, restore_velocity=True):
+               velocity_signal=None, restore_velocity=True, require_velocity_signal=False):
     """Move ``motor`` at constant velocity while repeatedly triggering detectors.
 
     This is a software-timed alignment helper, not a hardware-synchronized flyer.  It is intended
@@ -412,6 +412,10 @@ def ramp_count(dets, motor, start, stop, *, velocity=None, exposure=None, period
         Override for the velocity signal.  Defaults to ``motor.velocity``.
     restore_velocity : bool
         Restore the original velocity in a cleanup block after success or abort.
+    require_velocity_signal : bool
+        If true, raise when ``velocity`` is supplied but no velocity signal is available.  If false
+        (default), pseudo motors without a velocity signal simply use their current configured
+        motion speed.
     """
     if bps is None or bpp is None:  # pragma: no cover - importable off-beamline, runnable live
         raise RuntimeError("ramp_count requires bluesky in the active environment")
@@ -446,7 +450,7 @@ def ramp_count(dets, motor, start, stop, *, velocity=None, exposure=None, period
 
     if velocity is not None:
         velocity_signal = velocity_signal if velocity_signal is not None else getattr(motor, "velocity", None)
-        if velocity_signal is None:
+        if velocity_signal is None and require_velocity_signal:
             raise ValueError("velocity was supplied, but motor {!r} has no .velocity signal".format(motor_name))
 
     detector_period = exposure if period is None else period
@@ -471,7 +475,7 @@ def ramp_count(dets, motor, start, stop, *, velocity=None, exposure=None, period
                 ) from exc
             yield from exposure_plan(exposure, detector_period)
 
-        if velocity is not None:
+        if velocity is not None and velocity_signal is not None:
             state["original_velocity"] = yield from bps.rd(velocity_signal)
             yield from bps.mv(velocity_signal, velocity)
 

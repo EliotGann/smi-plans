@@ -67,6 +67,15 @@ def test_ramp_count_emits_run_and_restores_velocity(sim, inject):
     assert velocity.get() == pytest.approx(2.0)
 
 
+def test_ramp_count_allows_velocity_without_velocity_signal_on_pseudo_motor(sim, inject):
+    C = inject("smi_plans._core")
+    result = sim.run(C.ramp_count([sim.pil2M], sim.stage.phi, -0.1, 0.1,
+                                  velocity=0.5, reads=[sim.xbpm2], period=0.0))
+
+    sim.assert_one_run(result)
+    assert sim.primary_events(result) >= 1
+
+
 # ---------------------------------------------------------------------------
 # Duplicate-data-key collision regression (waxs = pil900KW.motors)
 # ---------------------------------------------------------------------------
@@ -427,4 +436,3 @@ def test_det_exposure_time_is_yielded_from(sim, inject):
 
     sim.messages(B.giwaxs_run("B", th0=0.0, incident_angles=[0.1], waxs_arc=[0], t=0.1))
     assert consumed["n"] >= 1, "det_exposure_time plan was never consumed (missing `yield from`?)"
-
