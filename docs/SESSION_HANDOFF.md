@@ -4,8 +4,8 @@
 > committed (and where), what's verified vs. not, and the next concrete steps.
 > **Last updated:** Phase 5 — all factory-owned live instance construction has been moved out of
 > `startup/smibase/` and into `src/smi_beamline/instances/`. The profile collection branch is
-> `phase-5-package-startup-cleanup`; latest pushed commit is `6f86938`. The migrated-module
-> `startup/smibase` compatibility shims have been deleted. The `bsui` console is working well and
+> `phase-5-package-startup-cleanup`; latest pushed commit is `bb59e0a`. The legacy
+> `startup/smibase/` package has been removed entirely. The `bsui` console is working well and
 > `pixi run test-hardware` has passed on the beamline.
 
 ---
@@ -16,6 +16,7 @@ Branch **`phase-5-package-startup-cleanup`** in the profile collection. **Pushed
 `httporigin/phase-5-package-startup-cleanup`. Latest commits:
 
 ```
+bb59e0a startup: inline remaining smibase bootstrap
 6f86938 startup: remove migrated smibase shims
 aaeaf38 docs: record phase 5 live verification
 c81345d instances: finish migrating startup modules
@@ -36,6 +37,11 @@ Completed in this batch:
 - Replaced each migrated `startup/smibase/*.py` file with a compatibility shim during migration,
   then deleted those temporary shims after confirming external user scripts use namespace devices
   rather than `smibase.*` imports.
+- Inlined the remaining `base.py` / `base_dev.py` bootstrap code into `startup/startup.py`, moved
+  the `zz_smi_plans.py` wiring helper into `startup/__init__.py` as `wire_smi_plans()`, and deleted
+  the legacy `startup/smibase/` package entirely.
+- Documented the old `base.py` and `base_dev.py` responsibilities directly in `startup/startup.py`
+  and `startup/README` for DSSI maintainers used to conventional NSLS-II profile layouts.
 - Updated the factory `DEVICE_MODULES` entries to import migrated device groups from
   `smi_beamline.instances.*`; the factory no longer imports device groups from `smibase.*`.
 - Added profile-local handoff doc `docs/PHASE_5_PACKAGE_MIGRATION.md`.
@@ -60,11 +66,18 @@ pixi run test-unit      # 110 passed
 pixi run test-sim       # 181 passed
 ```
 
+After removing `startup/smibase/` entirely and inlining the bootstrap:
+
+```
+pixi run test-unit      # 110 passed
+pixi run test-sim       # 181 passed
+pixi run -e qs qs-list  # plan/device list created successfully
+```
+
 The `bsui` console has also been confirmed working well on the beamline after the full instance
 module migration.
 
-Remaining `startup/smibase` modules are bootstrap/support modules, not factory-owned device groups:
-`base`, `base_dev`, `zz_smi_plans`, and package marker `__init__.py`.
+There are no remaining `startup/smibase` modules.
 
 Recommended next work: pull the latest profile branch on the beamline computer, rerun
 `pixi run test-hardware`, and launch `bsui` once as the final live smoke before merging the branch.
