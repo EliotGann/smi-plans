@@ -4,7 +4,7 @@
 > committed (and where), what's verified vs. not, and the next concrete steps.
 > **Last updated:** Phase 5 — all factory-owned live instance construction has been moved out of
 > `startup/smibase/` and into `src/smi_beamline/instances/`. The profile collection branch is
-> `phase-5-package-startup-cleanup`; latest pushed commit is `bb59e0a`. The legacy
+> `phase-5-package-startup-cleanup`; latest pushed commit is `01a751c`. The legacy
 > `startup/smibase/` package has been removed entirely. The `bsui` console is working well and
 > `pixi run test-hardware` has passed on the beamline.
 
@@ -16,6 +16,7 @@ Branch **`phase-5-package-startup-cleanup`** in the profile collection. **Pushed
 `httporigin/phase-5-package-startup-cleanup`. Latest commits:
 
 ```
+01a751c startup: use version-safe prompt tokens
 bb59e0a startup: inline remaining smibase bootstrap
 6f86938 startup: remove migrated smibase shims
 aaeaf38 docs: record phase 5 live verification
@@ -72,6 +73,7 @@ After removing `startup/smibase/` entirely and inlining the bootstrap:
 pixi run test-unit      # 110 passed
 pixi run test-sim       # 181 passed
 pixi run -e qs qs-list  # plan/device list created successfully
+timeout 35s pixi run start  # reached the custom SMI IPython prompt successfully
 ```
 
 The `bsui` console has also been confirmed working well on the beamline after the full instance
