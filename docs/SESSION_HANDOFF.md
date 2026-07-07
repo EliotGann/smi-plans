@@ -4,8 +4,9 @@
 > committed (and where), what's verified vs. not, and the next concrete steps.
 > **Last updated:** Phase 5 — all factory-owned live instance construction has been moved out of
 > `startup/smibase/` and into `src/smi_beamline/instances/`. The profile collection branch is
-> `phase-5-package-startup-cleanup`; latest pushed commit is `aaeaf38`. The `bsui` console is working
-> well and `pixi run test-hardware` has passed on the beamline.
+> `phase-5-package-startup-cleanup`; latest pushed commit is `6f86938`. The migrated-module
+> `startup/smibase` compatibility shims have been deleted. The `bsui` console is working well and
+> `pixi run test-hardware` has passed on the beamline.
 
 ---
 
@@ -15,6 +16,7 @@ Branch **`phase-5-package-startup-cleanup`** in the profile collection. **Pushed
 `httporigin/phase-5-package-startup-cleanup`. Latest commits:
 
 ```
+6f86938 startup: remove migrated smibase shims
 aaeaf38 docs: record phase 5 live verification
 c81345d instances: finish migrating startup modules
 cab86f0 instances: migrate startup modules into package
@@ -31,8 +33,9 @@ Completed in this batch:
   `src/smi_beamline/instances/`: `amptek`, `attenuators`, `beam`, `beamstop`, `bladecoater`, `crls`,
   `electrometers`, `energy`, `ioLogik`, `linkam`, `machine`, `manipulators`, `mirrors`, `motors`,
   `pilatus`, `prosilica`, `shutter`, `slits`, `suspenders`, `waxschamber`, `xbpms`.
-- Replaced each migrated `startup/smibase/*.py` file with a compatibility shim:
-  `from smi_beamline.instances.<module> import *`.
+- Replaced each migrated `startup/smibase/*.py` file with a compatibility shim during migration,
+  then deleted those temporary shims after confirming external user scripts use namespace devices
+  rather than `smibase.*` imports.
 - Updated the factory `DEVICE_MODULES` entries to import migrated device groups from
   `smi_beamline.instances.*`; the factory no longer imports device groups from `smibase.*`.
 - Added profile-local handoff doc `docs/PHASE_5_PACKAGE_MIGRATION.md`.
@@ -50,14 +53,21 @@ pixi run test-sim       # 181 passed
 pixi run test-hardware  # passed
 ```
 
+After deleting the temporary `startup/smibase` shims, offline tests were rerun:
+
+```
+pixi run test-unit      # 110 passed
+pixi run test-sim       # 181 passed
+```
+
 The `bsui` console has also been confirmed working well on the beamline after the full instance
 module migration.
 
-Remaining non-shim `startup/smibase` modules are bootstrap/support modules, not factory-owned device
-groups: `base`, `base_dev`, and `zz_smi_plans`.
+Remaining `startup/smibase` modules are bootstrap/support modules, not factory-owned device groups:
+`base`, `base_dev`, `zz_smi_plans`, and package marker `__init__.py`.
 
-Recommended next work: decide whether the remaining `startup/smibase/*.py` compatibility shims are
-still needed by out-of-tree user scripts before deleting or formally deprecating them.
+Recommended next work: pull the latest profile branch on the beamline computer, rerun
+`pixi run test-hardware`, and launch `bsui` once as the final live smoke before merging the branch.
 
 ---
 
