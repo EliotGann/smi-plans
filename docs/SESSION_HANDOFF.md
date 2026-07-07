@@ -2,11 +2,61 @@
 
 > **Purpose:** resume this work on another machine. Captures exactly where we are, what's
 > committed (and where), what's verified vs. not, and the next concrete steps.
-> **Last updated:** Phase 4 — **the profile now loads headless in the bluesky-queueserver worker**
-> (`base.py` is worker-aware), **proven** with `qserver-list-plans-devices` (139 devices + 38 plans,
-> 0 ignored). Pure-plan modules moved to `src/smi_beamline/plans/`. **Next: the deployment-side QS
-> artifacts only** (`user_group_permissions.yaml`, a local queue-Redis, plain-vs-IPython-kernel
-> worker) — the code is QS-ready.
+> **Last updated:** Phase 5 — live instance construction is now being moved out of `startup/` and
+> into `src/smi_beamline/instances/`. The first Phase-5 batch is committed and pushed in the profile
+> collection on branch `phase-5-package-startup-cleanup` at `cab86f0`.
+
+---
+
+## Latest session (Phase 5 — package startup cleanup) — TL;DR
+
+Branch **`phase-5-package-startup-cleanup`** in the profile collection. **Pushed** to GitHub as
+`httporigin/phase-5-package-startup-cleanup`. Latest commit:
+
+```
+cab86f0 instances: migrate startup modules into package
+```
+
+This is a post-Phase-4 structural cleanup. Phase 4 already made the profile QS-worker-loadable; Phase
+5 is moving remaining live beamline source out of `startup/` so `startup/` becomes only the execution
+bootstrap/compatibility layer.
+
+Completed in this batch:
+
+- Converted `src/smi_beamline/instances.py` into the package `src/smi_beamline/instances/__init__.py`.
+- Migrated these instance-construction modules from `startup/smibase/` to
+  `src/smi_beamline/instances/`: `amptek`, `beamstop`, `bladecoater`, `crls`, `electrometers`,
+  `ioLogik`, `linkam`, `machine`, `motors`, `slits`, `waxschamber`, `xbpms`.
+- Replaced each migrated `startup/smibase/*.py` file with a compatibility shim:
+  `from smi_beamline.instances.<module> import *`.
+- Updated the factory `DEVICE_MODULES` entries for migrated modules to import from
+  `smi_beamline.instances.*`.
+- Added profile-local handoff doc `docs/PHASE_5_PACKAGE_MIGRATION.md`.
+- Adjusted live hardware smoke checks so shutters require only essential status/open/close PVs and
+  WAXS arc readback connects only the arc motor, not the full detector tree.
+
+Verification recorded in the profile-local handoff:
+
+```
+pixi run test-unit      # 110 passed
+pixi run test-sim       # 181 passed
+pixi run test-hardware  # passed after smoke-test pruning
+```
+
+Factory imports still coming from `startup/smibase`:
+
+- `smibase.shutter`
+- `smibase.attenuators`
+- `smibase.manipulators`
+- `smibase.mirrors`
+- `smibase.energy`
+- `smibase.pilatus`
+- `smibase.prosilica`
+- `smibase.beam`
+- `smibase.suspenders`
+
+Recommended next work: migrate `prosilica` or `manipulators` first, then run
+`pixi run test-unit`, `pixi run test-sim`, and `pixi run test-hardware` from the profile collection.
 
 ---
 
