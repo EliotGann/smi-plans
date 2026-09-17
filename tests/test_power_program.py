@@ -409,6 +409,38 @@ def test_progress_failure_does_not_claim_completion(rig, capsys):
     assert "Complete:" not in text
 
 
+@pytest.mark.parametrize("baseline_image", [True, False])
+def test_summarize_thickness_program_without_hardware(rig, capsys, monkeypatch, baseline_image):
+    from bluesky.simulators import summarize_plan
+
+    # A slow terminal preview must not trip real acquisition deadlines.
+    def clock():
+        rig.clock.now += 10
+        return rig.clock.now
+
+    monkeypatch.setattr(rig.p, "_monotonic", clock)
+    summarize_plan(rig.plan(voltages=None, thickness_um=25,
+                           fields_MV_m=list(range(0, 101, 10)), reverse=True,
+                           hold_times=2, frame_period=1, exposure_time=0.5,
+                           baseline_image=baseline_image))
+    text = capsys.readouterr().out
+    assert "Preview step 22/22" in text
+    assert "Preview complete: 44 scheduled program images" in text
+    assert "expected_output_voltage_V" in text
+    assert "measured input" not in text
+    assert "pil2M_cam_num_images -> 0" not in text
+    assert not rig.messages  # RE never ran
+    assert not rig.docs
+    assert_restored(rig)
+
+
+def test_missing_real_readback_is_not_treated_as_preview(rig, monkeypatch):
+    monkeypatch.setattr(rig.ps.out_main_readback, "read", lambda: {})
+    with pytest.raises(KeyError, match="sorensen_ps1_out_main_readback"):
+        rig.RE(rig.plan())
+    assert_restored(rig)
+
+
 def test_profile_power_supply_contract(rig):
     """Opt-in: exercise the actual profile class using fake EPICS, never live instances."""
     import importlib.util

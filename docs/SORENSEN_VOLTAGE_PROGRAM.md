@@ -179,6 +179,13 @@ cleans up. A deferred pause cannot stop at a checkpoint inside this program.
 
 ## Development and deployment
 
+`summarize_plan(P_sorensen_voltage_program_run(...))` is supported as a message-only
+preview. It does not execute reads, writes, exposures, or sleeps. The plan labels
+preview progress explicitly, omits unknown camera restore values, and lists the
+expected-output read without inventing voltage/current measurements. Preview timing
+is nominal only; use a real acquisition to assess detector cadence. Missing data
+from an executed RunEngine read still fails rather than substituting dummy values.
+
 ```bash
 pixi run test-power
 pixi run test

@@ -438,8 +438,11 @@ def sorensen_voltage_program_run(
     trigger_reads = [r for r in dedup_readables(dets + reads)
                      if not any(r is sig for sig in electrical)]
     original = []
+    preview = {"active": False, "elapsed": 0.0}
 
     def _check_time(t0, nominal, *, starting=False):
+        if preview["active"]:
+            return nominal
         actual = _monotonic() - t0
         if actual - nominal > late_limit:
             raise RuntimeError(f"Sorensen cadence missed: scheduled {nominal:.6f}s, actual {actual:.6f}s "
@@ -449,6 +452,12 @@ def sorensen_voltage_program_run(
         return actual
 
     def _wait_until(t0, nominal):
+        if preview["active"]:
+            remaining = nominal - preview["elapsed"]
+            if remaining > 0:
+                yield from bps.sleep(remaining)
+            preview["elapsed"] = nominal
+            return nominal
         remaining = t0 + nominal - _monotonic()
         if remaining > 0:
             yield from bps.sleep(remaining)
@@ -473,6 +482,12 @@ def sorensen_voltage_program_run(
             reading = yield from bps.read(readable)
             if reading:
                 readings.update(reading)
+        if preview["active"]:
+            # summarize_plan sends None for every message: show the data field but
+            # do not invent electrical measurements or an expected-output value.
+            yield from bps.read(expected_output)
+            yield from bps.save()
+            return None, None, None
         # Use exactly the electrical readings saved in this event, not a second PV read.
         input_v = readings[ps.out_main_readback.name]["value"]
         command_v = readings[ps.out_main_setpoint.name]["value"]
@@ -511,7 +526,11 @@ def sorensen_voltage_program_run(
                     yield from bps.mv(field_sig, field_program["fields_MV_m"][step_i],
                                       sample_voltage_sig, field_program["sample_voltages_V"][step_i])
                 input_v, current_a, expected_v = yield from _point(t0, nominal)
-                if verbose and within_step == 0:
+                if verbose and within_step == 0 and preview["active"]:
+                    print(f"[{name}] Preview step {step_i + 1}/{len(vs)}: command {v:g} V; "
+                          f"hold {holds[step_i]:g} s ({count} images). V/I and expected output "
+                          "will be recorded during acquisition.")
+                elif verbose and within_step == 0:
                     target_text = (f"; target sample {field_program['sample_voltages_V'][step_i]:g} V"
                                    if field_program is not None else "")
                     print(f"[{name}] Step {step_i + 1}/{len(vs)}: command {v:g} V{target_text}; "
@@ -530,9 +549,15 @@ def sorensen_voltage_program_run(
         def cleanup():
             yield from _off()
             if verbose:
-                print(f"[{name}] Cleanup: output commanded OFF.")
+                if preview["active"]:
+                    print(f"[{name}] Preview cleanup: would command output OFF.")
+                else:
+                    print(f"[{name}] Cleanup: output commanded OFF.")
         result = yield from bpp.finalize_wrapper(_measure(), cleanup())
-        if verbose:
+        if verbose and preview["active"]:
+            print(f"[{name}] Preview complete: {sum(counts)} scheduled program images; "
+                  "no hardware operated or data saved.")
+        elif verbose:
             print(f"[{name}] Complete: {sum(counts)} program images saved "
                   f"over {sum(counts) * period:g} s, plus {int(bool(baseline_image))} baseline image.")
         return result
@@ -569,7 +594,15 @@ def sorensen_voltage_program_run(
             yield from bps.mv(ps.max_current, limit)
         yield from bps.mv(ps.out_main_setpoint, vs[0])
         for sig, value in camera_settings:
-            original.append((sig, (yield from bps.rd(sig))))
+            reading = yield from bps.read(sig)
+            if reading is None:
+                # A real RE rejects None from read(); message-only summarizers return it.
+                preview["active"] = True
+            else:
+                original.append((sig, reading[sig.name]["value"]))
+        if preview["active"] and verbose:
+            print(f"[{name}] Message-only preview: device values and restoration values "
+                  "are unavailable; no timing performance is being tested.")
         for _ in range(2):
             for sig, value in camera_settings:
                 yield from bps.mv(sig, value)
