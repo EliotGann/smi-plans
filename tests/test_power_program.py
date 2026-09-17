@@ -466,6 +466,38 @@ def test_profile_supplemental_baseline_coexists(rig, custom_baseline):
     assert_restored(rig)
 
 
+@pytest.mark.parametrize("fail_at", [1, 2])
+def test_disconnected_read_preserves_error_with_baseline_cleanup(rig, monkeypatch, fail_at):
+    from bluesky.preprocessors import SupplementalData
+    from ophyd.utils import DisconnectedError
+
+    rig.RE.preprocessors.append(SupplementalData(baseline=[Signal(name="beamline", value=1)]))
+    def read():
+        raise DisconnectedError("sorensen_ps1_current is not connected")
+
+    # Fail using the RE hook rather than describe's internal read (which may be
+    # called in addition to explicit reads).
+    original_hook = rig.RE.msg_hook
+    explicit_reads = []
+
+    def hook(msg):
+        original_hook(msg)
+        if msg.command == "read" and msg.obj is rig.ps.current:
+            explicit_reads.append(1)
+            if len(explicit_reads) == fail_at:
+                monkeypatch.setattr(rig.ps.current, "read", read)
+
+    rig.RE.msg_hook = hook
+    with pytest.raises(DisconnectedError, match="sorensen_ps1_current is not connected"):
+        rig.RE(rig.plan(baseline=None))
+    assert sum(m.command == "drop" for m in rig.messages) == 1
+    stop = next(d for n, d in rig.docs if n == "stop")
+    assert stop["exit_status"] == "fail"
+    assert "sorensen_ps1_current is not connected" in stop["reason"]
+    assert len(events(rig)) == fail_at - 1
+    assert_restored(rig)
+
+
 def test_profile_power_supply_contract(rig):
     """Opt-in: exercise the actual profile class using fake EPICS, never live instances."""
     import importlib.util

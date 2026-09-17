@@ -477,6 +477,16 @@ def sorensen_voltage_program_run(
         yield from bps.wait(group=group)
         yield from bps.mv(read_elapsed, -1.0 if t0 is None else _monotonic() - t0)
         yield from bps.create(name="primary")
+
+        def drop_incomplete(exc):
+            yield from bps.drop()
+
+        # Close incomplete bundles before run-close baseline preprocessors emit their
+        # own create messages. Otherwise a read error is masked by a second-create error.
+        return (yield from bpp.contingency_wrapper(
+            _read_point(t0), except_plan=drop_incomplete, else_plan=bps.save))
+
+    def _read_point(t0):
         readings = {}
         for readable in point_reads:
             reading = yield from bps.read(readable)
@@ -486,7 +496,6 @@ def sorensen_voltage_program_run(
             # summarize_plan sends None for every message: show the data field but
             # do not invent electrical measurements or an expected-output value.
             yield from bps.read(expected_output)
-            yield from bps.save()
             return None, None, None
         # Use exactly the electrical readings saved in this event, not a second PV read.
         input_v = readings[ps.out_main_readback.name]["value"]
@@ -497,7 +506,6 @@ def sorensen_voltage_program_run(
                       else 530.0 * float(input_v) + 190.0)
         yield from bps.mv(expected_output, expected_v)
         yield from bps.read(expected_output)
-        yield from bps.save()
         return input_v, readings[ps.current.name]["value"], expected_v
 
     def _measure():
