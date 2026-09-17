@@ -367,6 +367,27 @@ def test_N_xpcs_burst_emits_documents(sim, inject):
     sim.assert_one_run(msgs)          # the fix: a burst still emits run documents
 
 
+def test_P_sorensen_bias_series_baseline_then_biased(sim, inject):
+    P = inject("smi_plans.technique_P_power")
+    res = sim.messages(P.sorensen_bias_series_run("S", 5.0, n_frames=3, period=0.1, t=0.1))
+    sim.assert_one_run(res)
+    assert sim.primary_events(res) == 4       # one baseline image + three biased images
+    assert sim.sorensen_ps1.out_main_setpoint.get() == 5.0
+    assert sim.sorensen_ps1.out_main_command.get() == 0     # finalized safe/off
+
+    streams = {doc["uid"]: doc.get("name", "primary")
+               for name, doc in res.docs if name == "descriptor"}
+    events = [doc for name, doc in res.docs
+              if name == "event" and streams.get(doc["descriptor"]) == "primary"]
+    assert events[0]["data"]["bias_phase"] == "baseline"
+    assert events[0]["data"]["frame_index"] == -1
+    assert [ev["data"]["bias_phase"] for ev in events[1:]] == ["biased", "biased", "biased"]
+    assert [ev["data"]["frame_index"] for ev in events[1:]] == [0, 1, 2]
+    keys = set().union(*(ev["data"].keys() for ev in events))
+    assert any("out_main_readback" in k for k in keys)
+    assert any("current" in k for k in keys)
+
+
 # ---------------------------------------------------------------------------
 # K (tomography) + M (autonomous): the prs -> stage.phi repoint must work
 # ---------------------------------------------------------------------------

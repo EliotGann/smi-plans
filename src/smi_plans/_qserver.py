@@ -84,12 +84,13 @@ from . import (  # noqa: F401
     technique_M_autonomous as _M,
     technique_N_xpcs as _N,
     technique_O_commissioning as _O,
+    technique_P_power as _P,
 )
 
 #: Map of technique short-letter -> module.  Drives the namespaced re-export below.
 _TECHNIQUE_MODULES = {
     "A": _A, "B": _B, "C": _C, "D": _D, "E": _E, "F": _F, "G": _G, "H": _H,
-    "I": _I, "J": _J, "K": _K, "L": _L, "M": _M, "N": _N, "O": _O,
+    "I": _I, "J": _J, "K": _K, "L": _L, "M": _M, "N": _N, "O": _O, "P": _P,
 }
 
 #: Demo/example plan names that are intentionally NOT exposed to the queue (they hardcode a bar).
@@ -173,6 +174,9 @@ DEVICE_REGISTRY = {
     # alignment routines (profile-collection plan-functions, resolved by name for grazing specs)
     "alignement_gisaxs_hex": "GISAXS alignment routine (Huber/hexapod), called as align(angle)",
     "alignement_gisaxs_doblestack": "GISAXS alignment routine (double-stack), called as align(angle)",
+    # operando power supply
+    "sorensen_ps1": "Sorensen power supply 1 (voltage setpoint, output enable, V/I readbacks)",
+    "sorensen": "Sorensen power supply device (voltage setpoint, output enable, V/I readbacks)",
 }
 
 #: Heater builders by name (technique_C abstraction).  Used by ``temperature`` specs so a queue

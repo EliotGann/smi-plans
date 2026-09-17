@@ -192,6 +192,14 @@ class _Linkam(Device):
         return self._sp
 
 
+class _Sorensen(Device):
+    current = Cpt(Signal, value=0.1, name="current")
+    max_current = Cpt(Signal, value=1.0, name="max_current")
+    out_main_readback = Cpt(Signal, value=0.0, name="out_main_readback")
+    out_main_setpoint = Cpt(Signal, value=0.0, name="out_main_setpoint")
+    out_main_command = Cpt(Signal, value=0, name="out_main_command")
+
+
 class _Att:
     def __init__(self, name):
         self.close_cmd = SynSignal(func=lambda: 0, name=name + "_close")
@@ -235,6 +243,8 @@ class SimBeamline:
         self.pil2M_pos = _SDDpos(name="pil2M_pos")
         self.ls = _Lakeshore(name="ls")
         self.LThermal = _Linkam(name="LThermal")
+        self.sorensen_ps1 = _Sorensen(name="sorensen_ps1")
+        self.sorensen = self.sorensen_ps1
         self.OAV_writing = Syn2DGauss("OAV_writing", motor, "motor", motor, "motor",
                                       center=0, Imax=1)
         self.syringe_pu = SynAxis(name="syringe_pu")
@@ -279,7 +289,9 @@ class SimBeamline:
             "energy": self.energy, "xbpm2": self.xbpm2, "xbpm3": self.xbpm3,
             "pin_diode": self.pin_diode, "pil2M": self.pil2M, "pil900KW": self.pil900KW,
             "amptek": self.amptek, "rayonix": self.rayonix, "pil2M_pos": self.pil2M_pos,
-            "ls": self.ls, "LThermal": self.LThermal, "OAV_writing": self.OAV_writing,
+            "ls": self.ls, "LThermal": self.LThermal,
+            "sorensen_ps1": self.sorensen_ps1, "sorensen": self.sorensen,
+            "OAV_writing": self.OAV_writing,
             "syringe_pu": self.syringe_pu, "thorlabs_su": self.thorlabs_su,
             "att2_9": self.att2_9, "att2_10": self.att2_10, "att2_11": self.att2_11,
             "att2_12": self.att2_12,

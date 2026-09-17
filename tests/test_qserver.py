@@ -39,7 +39,8 @@ def test_exposes_namespaced_technique_presets():
     names = set(q.qserver_plan_names())
     # a representative spread across the A-O presets
     for n in ("A_nexafs_bar", "B_giwaxs_bar", "C_temperature_ramp_run",
-              "E_transmission_run", "H_potential_step_run", "K_tomography_run"):
+              "E_transmission_run", "H_potential_step_run", "K_tomography_run",
+              "P_sorensen_bias_series_run"):
         assert n in names
 
 
@@ -67,7 +68,7 @@ def test_every_exposed_technique_name_is_a_generator_plan():
     # the namespaced technique exports must all be generator functions (genuine plans)
     for n in q.qserver_plan_names():
         if n[:2] in ("A_", "B_", "C_", "D_", "E_", "F_", "G_", "H_",
-                     "I_", "J_", "K_", "L_", "M_", "N_", "O_"):
+                     "I_", "J_", "K_", "L_", "M_", "N_", "O_", "P_"):
             obj = getattr(q, n)
             assert inspect.isgeneratorfunction(obj), n
 

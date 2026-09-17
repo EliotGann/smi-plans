@@ -1,0 +1,26 @@
+[workspace]
+channels = ["conda-forge"]
+name = "smi-plans"
+platforms = [{ platform = "linux-64", glibc = "2.17" }]
+version = "0.1.0"
+
+[dependencies]
+python = ">=3.12,<3.13"
+bluesky-base = "==1.15.0"
+ophyd = ">=1.11.2"
+numpy = "*"
+scipy = "*"
+bokeh = "*"
+pandas = "*"
+pytest = ">=7"
+ruff = "*"
+
+[pypi-dependencies]
+smi-plans = { path = ".", editable = true }
+
+[tasks]
+test = "pytest -q"
+test-smoke = "pytest -q tests/test_smoke.py"
+test-qserver = "pytest -q tests/test_qserver.py"
+test-target = "pytest -q tests/test_smoke.py::test_P_sorensen_bias_series_baseline_then_biased tests/test_qserver.py::test_exposes_namespaced_technique_presets tests/test_qserver.py::test_every_exposed_technique_name_is_a_generator_plan"
+lint = "ruff check src tests"

@@ -16,6 +16,9 @@ src/*.egg-info/
 .coverage
 htmlcov/
 
+# Local pixi environment
+.pixi/
+
 # Editors / OS
 .vscode/
 .idea/
