@@ -290,8 +290,8 @@ def sorensen_bias_series_run(
 
 def sorensen_voltage_program_run(
         name, voltages=None, hold_times=None, *, frame_period=2.0, exposure_time=1.0,
-        detector="saxs", supply=None, dets=None, reads=None, current_limit=None,
-        baseline_image=True, max_lateness=0.1, geometry="transmission",
+        detector="saxs", supply=None, dets=None, reads=None, current_limit=0.1,
+        baseline_image=True, max_lateness=0.5, geometry="transmission",
         atten_in=None, baseline=None, md=None, thickness_um=None, fields_MV_m=None,
         reverse=None, verbose=True):
     """One run: output-off reference, then one image + electrical read per timed slot.
@@ -328,14 +328,17 @@ def sorensen_voltage_program_run(
     V/I are timestamped post-exposure snapshots, NOT exposure averages or sample leakage.
     Baseline times use -1 sentinels; phase/frame_index identify that pre-enable event.
 
-    A slot may start at most ``max_lateness`` seconds late (default 0.1, must be smaller
+    A slot may start at most ``max_lateness`` seconds late (default 0.5, must be smaller
     than frame_period). Failure to meet this, including slow voltage writes, raises
     RuntimeError and disables output; no catch-up exposures or skipped steps. The final
     hold lasts through its scheduled end even after the last image completes. Exposures
     are never deliberately started if their nominal duration would cross the next slot.
     Detector/read overhead can still overrun; actual times are recorded and checked.
 
-    ``current_limit`` optionally writes max_current in A; otherwise it is only recorded.
+    ``current_limit`` defaults to 0.1 A, written once after the reference image and
+    immediately before the single output-enable command. None preserves the existing
+    limit. The output status is read and printed after enable; this is a snapshot,
+    not a wait for a confirmed electrical transition.
     Output is disabled in cleanup before closing the run, including normal RE abort/error.
     The last voltage setpoint/current limit remain programmed with output off.
     ``atten_in`` is an optional pre-baseline measurement-configuration plan. Positioning,
@@ -517,9 +520,20 @@ def sorensen_voltage_program_run(
             yield from _point()
         # Do not permit a suspender/pause to replay an irreversible voltage program.
         yield from bps.clear_checkpoint()
+        if limit is not None:
+            yield from bps.mv(ps.max_current, limit)
+        if verbose:
+            limit_text = "unchanged" if limit is None else f"{limit:g} A"
+            print(f"[{name}] Enabling output once: current limit {limit_text}; "
+                  "out_main_command -> 1.")
         yield from bps.mv(out, 1)
         t0 = _monotonic()
-        yield from bps.mv(enable_time, time.time(), phase, "biased", step_elapsed, 0.0)
+        enable_wall_time = time.time()
+        status_read = yield from bps.read(ps.out_main_status)
+        if verbose and not preview["active"]:
+            print(f"[{name}] Output status after enable: "
+                  f"{status_read[ps.out_main_status.name]['value']!r} (status snapshot).")
+        yield from bps.mv(enable_time, enable_wall_time, phase, "biased", step_elapsed, 0.0)
         frame_i = 0
         for step_i, (v, count) in enumerate(zip(vs, counts)):
             for within_step in range(count):
@@ -579,6 +593,7 @@ def sorensen_voltage_program_run(
             "exposure_time": exposure, "n_frames": sum(counts),
             "duration": sum(counts) * period, "baseline_image": bool(baseline_image),
             "current_limit": limit, "max_lateness": late_limit,
+            "current_limit_timing": "after reference image, immediately before output enable",
             "time_zero": "output-enable command completed",
             "readback_timing": "post-exposure snapshots", "overrun_policy": "raise",
             "voltage_mode": "field_from_thickness" if field_program is not None else "direct",
@@ -598,8 +613,6 @@ def sorensen_voltage_program_run(
                   f"{sum(counts) * period:g} s; exposure {exposure:g} s every {period:g} s. "
                   "Expected HV output uses the CMS calibration.")
         yield from _off()
-        if limit is not None:
-            yield from bps.mv(ps.max_current, limit)
         yield from bps.mv(ps.out_main_setpoint, vs[0])
         for sig, value in camera_settings:
             reading = yield from bps.read(sig)

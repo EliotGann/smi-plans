@@ -24,8 +24,12 @@ RE(P_sorensen_voltage_program_run(
 
 This records 22 biased images over 44 seconds, plus one baseline image. For a
 single-voltage hold use `voltages=[1.385], hold_times=[120]` (60 biased frames).
-Optional `current_limit=...` is in **amperes at the Sorensen output**. Omit it to
-keep the configured limit; its readback is still recorded.
+`current_limit=0.1` is the default, in **amperes at the Sorensen output**. It is
+written once after the reference image, immediately before the single
+`out_main_command=1` enable command. Pass `current_limit=None` to preserve the
+configured limit. The reference image records the previous limit; subsequent
+images record the newly configured limit. The plan prints the enable command
+and its subsequent output-status snapshot to help diagnose hardware response.
 
 **Values passed to `voltages=` are direct Sorensen command voltages.** No high-voltage amplifier
 calibration is applied in that mode. The earlier 1.385 V calibration point is approximately
@@ -144,7 +148,7 @@ the timing budget.
 - `step_applied_elapsed_s` records the completion time of the step's voltage write.
   The first step is preprogrammed while output is off and assigned time zero.
 - `scheduled_elapsed_s` and `timing_lateness_s` allow cadence checks in analysis.
-- `max_lateness=0.1` allows 100 ms of scheduling delay. Larger delays fail the run
+- `max_lateness=0.5` allows 500 ms of scheduling delay. Larger delays fail the run
   and turn output off, rather than skip steps or acquire catch-up images. Camera
   completion/readout overruns are checked too. A nominal exposure is not started
   if it would cross the next frame slot.

@@ -120,7 +120,8 @@ def test_cadence_readbacks_and_assets(rig, detector, expected):
     assert [d["sorensen_ps1_out_main_readback"] for d in data] == [0, 0.8, 0.8, 1, 1]
     assert [d["sorensen_ps1_out_main_status"] for d in data] == [0, 1, 1, 1, 1]
     assert [d["sorensen_ps1_current"] for d in data] == [0, 0.02, 0.02, 0.02, 0.02]
-    assert all(d["sorensen_ps1_max_current"] == 0.1 for d in data)
+    assert data[0]["sorensen_ps1_max_current"] == 1.0  # original limit during reference
+    assert all(d["sorensen_ps1_max_current"] == 0.1 for d in data[1:])
     assert rig.clock.now == 9  # one baseline second + full eight-second program
     for name in expected:
         assert [t for n, t in rig.triggers if n == name] == [0, 1, 3, 5, 7]
@@ -151,6 +152,43 @@ def test_explicit_reads_occur_after_acquisition_wait(rig):
     assert len(events(rig)) == 4
 
 
+@pytest.mark.parametrize("limit", [0.1, 0.2, None])
+def test_current_limit_set_once_immediately_before_single_enable(rig, limit):
+    kwargs = {} if limit == 0.1 else {"current_limit": limit}
+    rig.RE(rig.plan(**kwargs))
+    messages = rig.messages
+    enables = [i for i, m in enumerate(messages)
+               if m.command == "set" and m.obj is rig.ps.out_main_command and m.args == (1,)]
+    limits = [i for i, m in enumerate(messages)
+              if m.command == "set" and m.obj is rig.ps.max_current]
+    assert len(enables) == 1
+    assert any(m.command == "save" for m in messages[:enables[0]])
+    if limit is None:
+        assert not limits
+    else:
+        assert len(limits) == 1
+        assert limits[0] < enables[0]
+        assert messages[limits[0]].args == (limit,)
+        assert [m.command for m in messages[limits[0]+1:enables[0]]] == ["wait"]
+    data = [d["data"] for d in events(rig)]
+    assert all(d["sorensen_ps1_max_current"] == (1.0 if limit is None else limit)
+               for d in data[1:])
+    assert_restored(rig)
+
+
+def test_default_half_second_tolerance_at_one_second_cadence(rig):
+    rig.clock.acquisition = 0.5
+    rig.clock.write_delay = 0.4
+    rig.RE(rig.plan(frame_period=1, exposure_time=0.5, hold_times=2))
+    data = [d["data"] for d in events(rig)]
+    assert [d["elapsed_s"] for d in data] == pytest.approx([-1, 0, 1, 2.4, 3])
+    assert data[3]["timing_lateness_s"] == pytest.approx(0.4)
+    md = next(d for n, d in rig.docs if n == "start")["sorensen_program"]
+    assert md["max_lateness"] == 0.5
+    assert md["current_limit"] == 0.1
+    assert_restored(rig)
+
+
 @pytest.mark.parametrize("overrides", [
     {"voltages": []}, {"hold_times": [4]}, {"hold_times": [3, 4]},
     {"hold_times": [0, 4]}, {"voltages": [float("nan"), 1]},
@@ -165,7 +203,7 @@ def test_validation_before_hardware_messages(rig, overrides):
 
 
 def test_slow_acquisition_fails_without_catchup(rig):
-    rig.clock.acquisition = 2.2
+    rig.clock.acquisition = 2.6
     with pytest.raises(RuntimeError, match="cadence missed"):
         rig.RE(rig.plan(baseline_image=False))
     assert len(events(rig)) == 1  # completed image retained; no catch-up or next voltage
@@ -184,7 +222,7 @@ def test_small_overhead_is_recorded_without_clock_drift(rig):
 
 
 def test_slow_voltage_write_fails_before_exposure(rig):
-    rig.clock.write_delay = 0.2
+    rig.clock.write_delay = 0.6
     with pytest.raises(RuntimeError, match="cadence missed"):
         rig.RE(rig.plan(baseline_image=False))
     assert len(events(rig)) == 2
