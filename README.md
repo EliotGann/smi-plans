@@ -100,6 +100,13 @@ smi-plans/
 
 ## Testing
 
+Use **pixi** for local development and tests: `pixi run test` or `pixi run test-power`.
+The local environment is compatible with the profile's Python/Bluesky stack; live
+acquisition still uses the profile collection's environment and device wiring.
+
+For explicit-cadence SAXS/WAXS with Sorensen voltage/current readings, see
+[Sorensen voltage programs](docs/SORENSEN_VOLTAGE_PROGRAM.md).
+
 The package is validated by running each plan against `ophyd.sim` devices and asserting on the
 generated Bluesky message stream (one run, balanced events) — no hardware needed.
 
