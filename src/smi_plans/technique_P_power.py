@@ -606,12 +606,17 @@ def sorensen_voltage_program_run(
         for _ in range(2):
             for sig, value in camera_settings:
                 yield from bps.mv(sig, value)
-        return (yield from one_sample_run(
+        run = one_sample_run(
             _protected_measure, dets,
             sample_name=fname(name, "{bias_phase}", "V{bias_voltage_setpoint}",
                               "n{frame_index}", "t{elapsed_s}s"),
             scan_name="sorensen_voltage_program", geometry=geometry,
-            md=run_md, baseline=baseline, reads=point_reads))
+            md=run_md, reads=point_reads)
+        # The profile's SupplementalData owns "baseline". A second declaration
+        # with only local fields would violate the stream's fixed data-key schema.
+        if baseline:
+            run = bpp.baseline_wrapper(run, baseline, name="sorensen_baseline")
+        return (yield from run)
 
     def _restore():
         # Also covers configuration/staging failures. Restore settings only after unstage.

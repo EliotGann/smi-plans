@@ -158,6 +158,13 @@ verified explicit-read setting.
 
 ## Data and lifecycle
 
+The profile's `SupplementalData` owns the `baseline` stream. Plan-local metadata
+(detector distance by default, or devices supplied via `baseline=`) is recorded in
+`sorensen_baseline` at run start/end, avoiding incompatible declarations under the
+same stream name. Set `baseline=[]` to omit that plan-local metadata stream. This
+does not disable the output-off reference image: `baseline_image=True` records that
+image in `primary`, with `bias_phase="baseline"`.
+
 One staged run owns all image resource/datum documents, including the baseline.
 Each trigger has one frame; each image gets a unique datum in a primary event.
 The baseline has `bias_phase="baseline"`, `frame_index=-1`, `program_step=-1`,

@@ -441,6 +441,31 @@ def test_missing_real_readback_is_not_treated_as_preview(rig, monkeypatch):
     assert_restored(rig)
 
 
+@pytest.mark.parametrize("custom_baseline", [False, True])
+def test_profile_supplemental_baseline_coexists(rig, custom_baseline):
+    from bluesky.preprocessors import SupplementalData
+
+    beamline = Signal(name="beamline_context", value=42)
+    distance = rig.p.pil2M_pos.z
+    sd = SupplementalData(baseline=[beamline, distance])
+    rig.RE.preprocessors.append(sd)
+    local = Signal(name="sample_context", value=25)
+    rig.RE(rig.plan(baseline=[local] if custom_baseline else None))
+    descriptors = {d["uid"]: d for n, d in rig.docs if n == "descriptor"}
+    streams = {d["name"]: set(d["data_keys"]) for d in descriptors.values()}
+    assert set(streams) == {"baseline", "sorensen_baseline", "primary"}
+    assert "beamline_context" in streams["baseline"]
+    assert "beamline_context" not in streams["sorensen_baseline"]
+    assert ("sample_context" if custom_baseline else distance.name) in streams["sorensen_baseline"]
+    for stream in ("baseline", "sorensen_baseline"):
+        assert sum(n == "event" and descriptors[d["descriptor"]]["name"] == stream
+                   for n, d in rig.docs) == 2
+    assert len(events(rig)) == 5  # reference image stays in primary
+    assert events(rig)[0]["data"]["bias_phase"] == "baseline"
+    assert sum(n == "start" for n, _ in rig.docs) == 1
+    assert_restored(rig)
+
+
 def test_profile_power_supply_contract(rig):
     """Opt-in: exercise the actual profile class using fake EPICS, never live instances."""
     import importlib.util
