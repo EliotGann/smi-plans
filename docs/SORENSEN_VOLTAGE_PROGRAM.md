@@ -27,10 +27,72 @@ single-voltage hold use `voltages=[1.385], hold_times=[120]` (60 biased frames).
 Optional `current_limit=...` is in **amperes at the Sorensen output**. Omit it to
 keep the configured limit; its readback is still recorded.
 
-**Voltage values are direct Sorensen command voltages.** No high-voltage amplifier
-calibration is applied. The earlier 1.385 V calibration point is approximately
+**Values passed to `voltages=` are direct Sorensen command voltages.** No high-voltage amplifier
+calibration is applied in that mode. The earlier 1.385 V calibration point is approximately
 500 V at the measured amplifier output for that setup; the recorded Sorensen
 voltage/current are not independent HV-output or sample-leakage measurements.
+
+## Calculate voltages from sample thickness and electric field
+
+Instead of `voltages=`, supply thickness in micrometers and field targets in MV/m:
+
+```python
+RE(P_sorensen_voltage_program_run(
+    "sample1_field_program",
+    thickness_um=25,
+    # fields_MV_m defaults to [0, 10, 20, ..., 150], matching CMS
+    reverse=True,            # includes repeated peak, matching CMS
+    hold_times=4,             # seconds at EACH step, including the return path
+    frame_period=2.0,
+    exposure_time=1.0,
+    detector="saxs",
+    baseline_image=True,
+))
+```
+
+The conversion matches the active CMS **Sample.setVoltages** method:
+
+1. `sample_voltage_V = thickness_um * field_MV_m`.
+2. Force the **first** command to `0`.
+3. Subsequent commands: `numpy.round((sample_voltage_V - 190) / 530, 2)`.
+4. Retain commands `<= 11.5 V`.
+5. Append the full reversed command list when `reverse=True`; otherwise append `0`.
+
+These are intended sample voltage/field values, not measured readbacks. This uses
+the CMS calibration requested for this setup, not the newer calibration measurements
+made at a different input impedance or the older piecewise module-level CMS helper.
+
+For 25 µm, the forward commands are
+`[0, 0.11, 0.58, 1.06, 1.53, 2.0, 2.47, 2.94, 3.42, 3.89, 4.36, 4.83, 5.3, 5.77, 6.25, 6.72]` V.
+With reversal there are **32 steps, 128 seconds, 64 biased images**, plus the reference.
+The peak appears twice. `reverse=False` appends a final zero command.
+
+`fields_MV_m=` can override the default field sequence. A hold list must match that
+original sequence: holds follow retained steps through filtering and reversal.
+The appended zero for `reverse=False` uses the last retained hold. A scalar repeats
+for every resulting step. Holds must still be multiples of frame_period.
+
+For exact CMS parity, negative converted commands are retained (there is only an
+upper-command filter in CMS); the device's limits may reject them. Even if the first
+requested field is nonzero, the first command is forced zero. A later zero-field
+entry is converted by the formula, whereas the appended final zero is literal zero.
+Previewing the generated commands makes these legacy edge cases visible.
+
+Preview without operating hardware:
+
+```python
+from smi_plans.technique_P_power import build_sorensen_field_program
+program = build_sorensen_field_program(25, reverse=True)
+print(program["sample_voltages_V"])
+print(program["voltages"])  # direct Sorensen commands
+```
+
+The run metadata saves thickness, expanded field/sample-voltage targets, calibration,
+and actual command list. Each primary event additionally carries `sample_thickness_um`,
+`target_field_MV_m`, and `target_sample_voltage_V`. Reference-image targets are zero
+because the output is off; the programmed first setpoint is recorded separately.
+Manual `voltages=` calls retain their existing behavior and cannot be mixed with
+the thickness/field/reverse arguments.
 
 Select the sample, beam/shutter configuration, and WAXS geometry before this plan.
 The plan does not move the sample or detector. Use a WAXS position that leaves the
@@ -38,6 +100,34 @@ SAXS beam path clear when requesting SAXS. `atten_in=` can supply a measurement
 setup plan before the baseline image.
 
 ## Timing contract
+
+### Progress and expected output
+
+By default, the plan prints a summary, a reference-image notice, and a progress
+line after the first image of each step. The step line shows the commanded input,
+requested sample voltage (in thickness mode), hold duration, measured input/current,
+and expected HV output. Cleanup and successful completion have separate messages.
+Pass `verbose=False` to silence these messages without affecting recorded data.
+
+Every primary image event, including reference images and manual `voltages=` runs,
+records **`expected_output_voltage_V`** as a software Signal. It uses the very same
+input-voltage readback saved in that event, not an extra PV read:
+
+```
+expected_output_voltage_V = 530 * sorensen_ps1_out_main_readback + 190
+```
+
+This is the CMS model estimate, **not an independently measured HV output**. It is
+set to zero for the output-off reference, a zero command, a zero input readback,
+or a reported output-off state; this does not measure residual HV/discharge.
+The model, source key, units, and zero convention are recorded in run metadata
+under `sorensen_program.expected_output`.
+
+`target_sample_voltage_V` remains the requested thickness × field voltage; the
+expected output can differ due to command rounding or differences in the measured
+input. Both are separate from the measured Sorensen voltage/current. Progress
+output happens after saving the step's first image; console overhead counts toward
+the timing budget.
 
 - Holds must be positive integer multiples of `frame_period`.
 - Time zero is immediately after the output-enable command completes, excluding

@@ -275,6 +275,138 @@ def test_queue_surface():
     from smi_plans.technique_P_power import sorensen_voltage_program_run
     assert q.P_sorensen_voltage_program_run is sorensen_voltage_program_run
     assert "P_sorensen_voltage_program_run" in q.qserver_plan_names()
+    assert "P_build_sorensen_field_program" not in q.qserver_plan_names()
+
+
+@pytest.mark.parametrize("holds,expected_holds", [(4, [4]*6), ([2, 4, 6], [2, 4, 6, 6, 4, 2])])
+def test_thickness_program_commands_metadata_and_events(rig, holds, expected_holds):
+    rig.RE(rig.plan(voltages=None, thickness_um=25, fields_MV_m=[0, 16, 20],
+                    reverse=True, hold_times=holds))
+    fields = [0, 16, 20, 20, 16, 0]
+    targets = [0, 400, 500, 500, 400, 0]
+    commands = [0, 0.4, 0.58, 0.58, 0.4, 0]
+    start = next(d for n, d in rig.docs if n == "start")
+    program = start["sorensen_program"]
+    assert program["voltages"] == pytest.approx(commands)
+    assert program["hold_times"] == expected_holds
+    assert program["field_program"]["sample_voltages_V"] == targets
+    assert program["field_program"]["fields_MV_m"] == fields
+    assert program["field_program"]["calibration"]["name"] == "CMS Sample.setVoltages"
+    data = [d["data"] for d in events(rig)]
+    assert len(data) == 1 + sum(expected_holds)//2
+    assert data[0]["target_field_MV_m"] == 0
+    for d in data[1:]:
+        i = d["program_step"]
+        assert d["sample_thickness_um"] == 25
+        assert d["target_sample_voltage_V"] == targets[i]
+        assert d["target_field_MV_m"] == fields[i]
+        assert d["bias_voltage_setpoint"] == pytest.approx(commands[i])
+        assert d["sorensen_ps1_out_main_readback"] == pytest.approx(commands[i])
+    assert_restored(rig)
+
+
+def test_thickness_scaling_and_zero_policy():
+    from smi_plans.technique_P_power import build_sorensen_field_program as build
+    assert build(25, [0, 10, 20], reverse=False)["voltages"] == [0, 0.11, 0.58, 0]
+    assert build(50, [0, 10, 20], reverse=False)["voltages"] == [0, 0.58, 1.53, 0]
+    assert build(25, [20], reverse=True)["voltages"] == [0, 0]
+
+
+@pytest.mark.parametrize("thickness", [1, 25, 50, 100])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_exact_cms_default_command_parity(thickness, reverse):
+    import numpy as np
+
+    from smi_plans.technique_P_power import build_sorensen_field_program as build
+    expected = []
+    for i, v in enumerate(thickness * np.arange(0, 150.1, 10)):
+        command = 0 if i == 0 else np.round((v - 190) / 530, 2)
+        if command <= 11.5:
+            expected.append(command)
+    expected = expected + (expected[::-1] if reverse else [0])
+    assert build(thickness, reverse=reverse)["voltages"] == expected
+
+
+def test_filtered_steps_keep_correct_holds(rig):
+    rig.RE(rig.plan(voltages=None, thickness_um=100, fields_MV_m=[0, 50, 100],
+                    hold_times=[2, 4, 6], reverse=False))
+    program = next(d for n, d in rig.docs if n == "start")["sorensen_program"]
+    assert program["voltages"] == [0, 9.08, 0]  # 10000 V target excluded by CMS threshold
+    assert program["hold_times"] == [2, 4, 4]
+    assert len(events(rig)) == 6
+    assert_restored(rig)
+
+
+@pytest.mark.parametrize("override", [
+    {"thickness_um": 0}, {"thickness_um": -25}, {"thickness_um": float("nan")},
+    {"fields_MV_m": []}, {"fields_MV_m": [-1]}, {"fields_MV_m": [float("inf")]},
+    {"voltages": [1]}, {"hold_times": [2, 2]},
+])
+def test_field_validation_before_any_hardware_message(rig, override):
+    opts = {"voltages": None, "thickness_um": 25, "fields_MV_m": [20],
+             "hold_times": 4}
+    opts.update(override)
+    with pytest.raises(ValueError):
+        rig.RE(rig.plan(**opts))
+    assert not rig.messages
+
+
+def test_direct_scalar_hold_and_missing_arguments(rig):
+    rig.RE(rig.plan(hold_times=4))
+    assert len(events(rig)) == 5
+    assert_restored(rig)
+    rig.messages.clear()
+    with pytest.raises(ValueError, match="hold_times is required"):
+        rig.RE(rig.plan(hold_times=None))
+    assert not rig.messages
+
+
+def test_expected_output_uses_saved_input_readback(rig, monkeypatch):
+    original = rig.ps.out_main_readback.read
+    calls = []
+
+    def read():
+        reading = original()
+        # Deliberately differ from the command; estimation must use the saved value.
+        reading[rig.ps.out_main_readback.name]["value"] = 0.9
+        calls.append(1)
+        return reading
+
+    monkeypatch.setattr(rig.ps.out_main_readback, "read", read)
+    rig.RE(rig.plan(voltages=[0, 1], hold_times=4))
+    data = [d["data"] for d in events(rig)]
+    # Signal.describe() can call read() internally to infer dtype. Count actual RE
+    # read messages to verify that the plan does not acquire an extra PV snapshot.
+    assert sum(m.command == "read" and m.obj is rig.ps.out_main_readback
+               for m in rig.messages) == len(data)
+    assert [d["expected_output_voltage_V"] for d in data] == [0, 0, 0, 667, 667]
+    assert all(d["sorensen_ps1_out_main_readback"] == 0.9 for d in data)
+    estimate = next(d for n, d in rig.docs if n == "start")["sorensen_program"]["expected_output"]
+    assert estimate["measured"] is False
+    assert estimate["source"] == "sorensen_ps1_out_main_readback"
+
+
+def test_progress_text_and_quiet_mode(rig, capsys):
+    rig.RE(rig.plan())
+    text = capsys.readouterr().out
+    assert "Starting Sorensen program: 2 steps, 4 images, 8 s" in text
+    assert "Baseline: output OFF" in text
+    assert "Step 1/2: command 0.8 V" in text
+    assert "Step 2/2: command 1 V" in text
+    assert "expected output 614.00 V (CMS estimate)" in text
+    assert "Cleanup: output commanded OFF" in text
+    assert "Complete: 4 program images saved" in text
+    rig.RE(rig.plan(verbose=False))
+    assert capsys.readouterr().out == ""
+
+
+def test_progress_failure_does_not_claim_completion(rig, capsys):
+    rig.clock.acquisition = 3
+    with pytest.raises(RuntimeError, match="cadence missed"):
+        rig.RE(rig.plan(baseline_image=False))
+    text = capsys.readouterr().out
+    assert "Cleanup: output commanded OFF" in text
+    assert "Complete:" not in text
 
 
 def test_profile_power_supply_contract(rig):

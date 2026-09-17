@@ -31,7 +31,65 @@ except Exception:  # pragma: no cover
     bpp = None
 
 
-__all__ = ["sorensen_bias_series_run", "sorensen_voltage_program_run"]
+__all__ = ["sorensen_bias_series_run", "sorensen_voltage_program_run",
+           "build_sorensen_field_program"]
+
+
+def _finite_number(value, label, *, positive=False):
+    value = float(value)
+    if not math.isfinite(value) or (positive and value <= 0):
+        raise ValueError("{} must be finite{}".format(label, " and positive" if positive else ""))
+    return value
+
+
+def build_sorensen_field_program(thickness_um, fields_MV_m=None, *, reverse=True):
+    """Preview direct Sorensen commands from thickness and electric-field targets.
+
+    Pure calculation, no devices or messages. ``V_sample = thickness_um * field_MV_m``.
+    Matches the active CMS Sample.setVoltages: first command 0, subsequent commands
+    np.round((target - 190) / 530, 2), keeping only commands <= 11.5 V. Defaults to
+    fields 0..150 MV/m in steps of 10. The full reverse is appended (peak repeated),
+    or a final zero when reverse=False. Negative converted commands are retained,
+    exactly as in CMS; hardware limits may reject them. This is not the older
+    piecewise module-level setVoltages helper or the newer SMI impedance-dependent fit.
+    Returned dict includes retained source indices to keep hold durations aligned
+    when the legacy upper-command filter drops steps.
+    """
+    thickness = _finite_number(thickness_um, "thickness_um", positive=True)
+    import numpy as np
+
+    fields = [_finite_number(f, "field") for f in
+              (range(0, 151, 10) if fields_MV_m is None else fields_MV_m)]
+    if not fields or any(f < 0 for f in fields):
+        raise ValueError("fields_MV_m must be nonempty and nonnegative")
+    commands, targets, kept_fields, indices = [], [], [], []
+    for i, field in enumerate(fields):
+        target = thickness * field
+        if not math.isfinite(target):
+            raise ValueError("thickness times field must be finite")
+        command = 0.0 if i == 0 else float(np.round((target - 190) / 530, 2))
+        if command <= 11.5:
+            commands.append(command)
+            # First step is forced off in CMS even if the requested first field isn't zero.
+            targets.append(0.0 if i == 0 else target)
+            kept_fields.append(0.0 if i == 0 else field)
+            indices.append(i)
+    if reverse:
+        commands += commands[::-1]
+        targets += targets[::-1]
+        kept_fields += kept_fields[::-1]
+        indices += indices[::-1]
+    else:
+        commands.append(0.0)
+        targets.append(0.0)
+        kept_fields.append(0.0)
+        indices.append(indices[-1])  # final zero uses the last retained hold
+    return {"thickness_um": thickness, "fields_MV_m": kept_fields, "sample_voltages_V": targets,
+            "requested_fields_MV_m": fields, "source_indices": indices,
+            "voltages": commands, "reverse": bool(reverse),
+            "calibration": {"name": "CMS Sample.setVoltages", "slope": 530.0,
+                            "intercept": 190.0, "decimals": 2, "max_command_V": 11.5,
+                            "zero_policy": "first command forced zero"}}
 
 
 _VOLTAGE_SETPOINT_ATTRS = (
@@ -231,16 +289,30 @@ def sorensen_bias_series_run(
 
 
 def sorensen_voltage_program_run(
-        name, voltages, hold_times, *, frame_period=2.0, exposure_time=1.0,
+        name, voltages=None, hold_times=None, *, frame_period=2.0, exposure_time=1.0,
         detector="saxs", supply=None, dets=None, reads=None, current_limit=None,
         baseline_image=True, max_lateness=0.1, geometry="transmission",
-        atten_in=None, baseline=None, md=None):
+        atten_in=None, baseline=None, md=None, thickness_um=None, fields_MV_m=None,
+        reverse=None, verbose=True):
     """One run: output-off reference, then one image + electrical read per timed slot.
 
     ``voltages`` are DIRECT Sorensen setpoints in V, not calibrated sample/HV output.
-    ``hold_times`` are positive seconds, each an integer multiple of ``frame_period``.
+    Alternatively omit voltages and supply thickness_um, with optional fields_MV_m.
+    Uses the legacy CMS conversion (see build_sorensen_field_program), including its
+    rounding and upper-command filter. Default fields 0..150 by 10, reverse=True.
+    Computed targets are recorded separately from measured Sorensen V/I. The reversed
+    sequence repeats the peak; reverse=False appends zero using the last retained hold.
+    ``hold_times`` are positive seconds, each an integer multiple of ``frame_period``;
+    a scalar repeats for every step. A list describes the original, unmirrored sequence.
     The number of biased frames is derived from these holds. ``frame_period`` means
     start-to-start, unlike the post-acquisition ``period`` in ``sorensen_bias_series_run``.
+
+    ``verbose=True`` prints a run summary, baseline notice, step progress and cleanup.
+    Every image also records ``expected_output_voltage_V`` calculated from that event's
+    measured Sorensen voltage using the CMS model (530 * input + 190). The estimate
+    is zero for the output-off baseline, zero command, zero measured input, or a
+    reported off status. It is a model estimate, NOT a measured HV output. This model
+    is also used for manual voltages= programs. Its assumptions are saved in metadata.
 
     Default cameras: ``saxs`` (pil2M), ``waxs`` (pil900KW), or ``saxs_waxs`` (both).
     ``dets`` may instead supply camera devices with cam.acquire_time, acquire_period,
@@ -274,11 +346,7 @@ def sorensen_voltage_program_run(
     without a checkpoint aborts and cleans up under Bluesky 1.15. RE.halt/process loss
     cannot guarantee generator cleanup.
     """
-    def _finite(value, label, *, positive=False):
-        value = float(value)
-        if not math.isfinite(value) or (positive and value <= 0):
-            raise ValueError("{} must be finite{}".format(label, " and positive" if positive else ""))
-        return value
+    _finite = _finite_number
 
     period = _finite(frame_period, "frame_period", positive=True)
     exposure = _finite(exposure_time, "exposure_time", positive=True)
@@ -287,8 +355,30 @@ def sorensen_voltage_program_run(
         raise ValueError("max_lateness must be >= 0 and < frame_period")
     if exposure + 0.001 >= period:
         raise ValueError("exposure_time + 0.001 must be < frame_period to leave readout time")
-    vs = [_finite(v, "voltage") for v in voltages]
-    holds = [_finite(h, "hold_time", positive=True) for h in hold_times]
+    field_program = None
+    if voltages is None:
+        if thickness_um is None:
+            raise ValueError("Supply voltages OR thickness_um")
+        fields = list(range(0, 151, 10) if fields_MV_m is None else fields_MV_m)
+        original_count = len(fields)
+        field_program = build_sorensen_field_program(
+            thickness_um, fields, reverse=True if reverse is None else reverse)
+        vs = field_program["voltages"]
+    else:
+        if any(v is not None for v in (thickness_um, fields_MV_m, reverse)):
+            raise ValueError("voltages cannot be combined with thickness/field/reverse arguments")
+        vs = [_finite(v, "voltage") for v in voltages]
+        original_count = len(vs)
+    if hold_times is None:
+        raise ValueError("hold_times is required (seconds per step, scalar or list)")
+    if isinstance(hold_times, (int, float)):
+        holds = [_finite(hold_times, "hold_time", positive=True)] * original_count
+    else:
+        holds = [_finite(h, "hold_time", positive=True) for h in hold_times]
+    if len(holds) != original_count:
+        raise ValueError("hold_times must match the original voltage or field sequence length")
+    if field_program is not None:
+        holds = [holds[i] for i in field_program["source_indices"]]
     if not vs or len(vs) != len(holds):
         raise ValueError("voltages and hold_times must be nonempty and have equal lengths")
     counts = [round(h / period) for h in holds]
@@ -336,8 +426,14 @@ def sorensen_voltage_program_run(
     step_elapsed = _signal("step_applied_elapsed_s", -1.0)
     enable_time = _signal("output_enable_time", -1.0)
     exposure_sig = _signal("exposure_s", exposure)
+    expected_output = _signal("expected_output_voltage_V", 0.0)
     context = [phase, index, step, target, elapsed, read_elapsed, scheduled,
-               lateness, step_elapsed, enable_time, exposure_sig]
+                lateness, step_elapsed, enable_time, exposure_sig]
+    if field_program is not None:
+        thickness_sig = _signal("sample_thickness_um", field_program["thickness_um"])
+        field_sig = _signal("target_field_MV_m", 0.0)
+        sample_voltage_sig = _signal("target_sample_voltage_V", 0.0)
+        context += [thickness_sig, field_sig, sample_voltage_sig]
     point_reads = dedup_readables(dets + reads + electrical + context)
     trigger_reads = [r for r in dedup_readables(dets + reads)
                      if not any(r is sig for sig in electrical)]
@@ -372,14 +468,29 @@ def sorensen_voltage_program_run(
         yield from bps.wait(group=group)
         yield from bps.mv(read_elapsed, -1.0 if t0 is None else _monotonic() - t0)
         yield from bps.create(name="primary")
+        readings = {}
         for readable in point_reads:
-            yield from bps.read(readable)
+            reading = yield from bps.read(readable)
+            if reading:
+                readings.update(reading)
+        # Use exactly the electrical readings saved in this event, not a second PV read.
+        input_v = readings[ps.out_main_readback.name]["value"]
+        command_v = readings[ps.out_main_setpoint.name]["value"]
+        output_status = readings[ps.out_main_status.name]["value"]
+        reported_off = output_status == 0 or str(output_status).strip().lower() in ("off", "disabled", "disable")
+        expected_v = (0.0 if t0 is None or command_v == 0 or input_v == 0 or reported_off
+                      else 530.0 * float(input_v) + 190.0)
+        yield from bps.mv(expected_output, expected_v)
+        yield from bps.read(expected_output)
         yield from bps.save()
+        return input_v, readings[ps.current.name]["value"], expected_v
 
     def _measure():
         if atten_in is not None:
             yield from atten_in()
         if baseline_image:
+            if verbose:
+                print(f"[{name}] Baseline: output OFF; acquiring reference image and V/I.")
             yield from _point()
         # Do not permit a suspender/pause to replay an irreversible voltage program.
         yield from bps.clear_checkpoint()
@@ -396,7 +507,18 @@ def sorensen_voltage_program_run(
                     applied = _check_time(t0, nominal)
                     yield from bps.mv(step_elapsed, applied)
                 yield from bps.mv(index, frame_i, step, step_i, target, v, scheduled, nominal)
-                yield from _point(t0, nominal)
+                if field_program is not None:
+                    yield from bps.mv(field_sig, field_program["fields_MV_m"][step_i],
+                                      sample_voltage_sig, field_program["sample_voltages_V"][step_i])
+                input_v, current_a, expected_v = yield from _point(t0, nominal)
+                if verbose and within_step == 0:
+                    target_text = (f"; target sample {field_program['sample_voltages_V'][step_i]:g} V"
+                                   if field_program is not None else "")
+                    print(f"[{name}] Step {step_i + 1}/{len(vs)}: command {v:g} V{target_text}; "
+                          f"hold {holds[step_i]:g} s ({count} images). "
+                          f"First image: measured input {input_v:g} V, current {current_a:g} A; "
+                          f"expected output {expected_v:.2f} V (CMS estimate). "
+                          f"Image {frame_i + 1}/{sum(counts)} saved.")
                 _check_time(t0, nominal + period)
                 frame_i += 1
         yield from _wait_until(t0, sum(counts) * period)
@@ -405,7 +527,15 @@ def sorensen_voltage_program_run(
         yield from bps.mv(out, 0)
 
     def _protected_measure():
-        return (yield from bpp.finalize_wrapper(_measure(), _off()))
+        def cleanup():
+            yield from _off()
+            if verbose:
+                print(f"[{name}] Cleanup: output commanded OFF.")
+        result = yield from bpp.finalize_wrapper(_measure(), cleanup())
+        if verbose:
+            print(f"[{name}] Complete: {sum(counts)} program images saved "
+                  f"over {sum(counts) * period:g} s, plus {int(bool(baseline_image))} baseline image.")
+        return result
 
     run_md = merge_md(md, {
         "plan_name": "sorensen_voltage_program_run",
@@ -418,10 +548,22 @@ def sorensen_voltage_program_run(
             "current_limit": limit, "max_lateness": late_limit,
             "time_zero": "output-enable command completed",
             "readback_timing": "post-exposure snapshots", "overrun_policy": "raise",
+            "voltage_mode": "field_from_thickness" if field_program is not None else "direct",
+            "field_program": field_program,
+            "expected_output": {
+                "data_key": "expected_output_voltage_V", "units": "V",
+                "source": ps.out_main_readback.name, "model": "CMS: 530 * measured_input_V + 190",
+                "slope": 530.0, "intercept": 190.0, "measured": False,
+                "zero_policy": "baseline, zero setpoint, zero input readback, or reported output off",
+            },
         },
     })
 
     def _body():
+        if verbose:
+            print(f"[{name}] Starting Sorensen program: {len(vs)} steps, {sum(counts)} images, "
+                  f"{sum(counts) * period:g} s; exposure {exposure:g} s every {period:g} s. "
+                  "Expected HV output uses the CMS calibration.")
         yield from _off()
         if limit is not None:
             yield from bps.mv(ps.max_current, limit)
