@@ -148,10 +148,14 @@ the timing budget.
 - `step_applied_elapsed_s` records the completion time of the step's voltage write.
   The first step is preprogrammed while output is off and assigned time zero.
 - `scheduled_elapsed_s` and `timing_lateness_s` allow cadence checks in analysis.
-- `max_lateness=0.5` allows 500 ms of scheduling delay. Larger delays fail the run
-  and turn output off, rather than skip steps or acquire catch-up images. Camera
-  completion/readout overruns are checked too. A nominal exposure is not started
-  if it would cross the next frame slot.
+- `max_lateness=1.0` (seconds) is a configurable tolerance, independent of the frame
+  period. For example pass `max_lateness=1.5` to allow 1.5 seconds. Values must be
+  finite and nonnegative; zero requests strict scheduling and is generally impractical.
+  Larger delays fail the run and turn output off. No frames/steps are skipped;
+  late frames can run back-to-back to regain the original schedule. The clock is
+  not reset, so sustained overhead still accumulates and can exceed tolerance.
+  Camera completion/readout overruns are checked too. A nominal exposure is not
+  started if it would exceed the next frame slot **plus the same tolerance**.
 - Output remains enabled until the final hold deadline; normal readout can finish
   after that deadline, bounded by the same lateness policy once control returns.
   This is software scheduling, not a hard real-time output cutoff.

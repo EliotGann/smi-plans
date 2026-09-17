@@ -291,7 +291,7 @@ def sorensen_bias_series_run(
 def sorensen_voltage_program_run(
         name, voltages=None, hold_times=None, *, frame_period=2.0, exposure_time=1.0,
         detector="saxs", supply=None, dets=None, reads=None, current_limit=0.1,
-        baseline_image=True, max_lateness=0.5, geometry="transmission",
+        baseline_image=True, max_lateness=1.0, geometry="transmission",
         atten_in=None, baseline=None, md=None, thickness_um=None, fields_MV_m=None,
         reverse=None, verbose=True):
     """One run: output-off reference, then one image + electrical read per timed slot.
@@ -328,11 +328,13 @@ def sorensen_voltage_program_run(
     V/I are timestamped post-exposure snapshots, NOT exposure averages or sample leakage.
     Baseline times use -1 sentinels; phase/frame_index identify that pre-enable event.
 
-    A slot may start at most ``max_lateness`` seconds late (default 0.5, must be smaller
-    than frame_period). Failure to meet this, including slow voltage writes, raises
-    RuntimeError and disables output; no catch-up exposures or skipped steps. The final
+    A slot may start at most ``max_lateness`` seconds late (default 1.0; any finite
+    nonnegative value, including values >= frame_period). Failure to meet this,
+    including slow voltage writes, raises RuntimeError and disables output. No frames
+    or steps are skipped. Late frames may run back-to-back while recovering the original
+    schedule; the clock is not reset, so sustained overruns accumulate. The final
     hold lasts through its scheduled end even after the last image completes. Exposures
-    are never deliberately started if their nominal duration would cross the next slot.
+    are not started if their nominal duration would exceed the next slot plus tolerance.
     Detector/read overhead can still overrun; actual times are recorded and checked.
 
     ``current_limit`` defaults to 0.1 A, written once after the reference image and
@@ -354,8 +356,8 @@ def sorensen_voltage_program_run(
     period = _finite(frame_period, "frame_period", positive=True)
     exposure = _finite(exposure_time, "exposure_time", positive=True)
     late_limit = _finite(max_lateness, "max_lateness")
-    if not 0 <= late_limit < period:
-        raise ValueError("max_lateness must be >= 0 and < frame_period")
+    if late_limit < 0:
+        raise ValueError("max_lateness must be finite and >= 0")
     if exposure + 0.001 >= period:
         raise ValueError("exposure_time + 0.001 must be < frame_period to leave readout time")
     field_program = None
@@ -450,8 +452,8 @@ def sorensen_voltage_program_run(
         if actual - nominal > late_limit:
             raise RuntimeError(f"Sorensen cadence missed: scheduled {nominal:.6f}s, actual {actual:.6f}s "
                                f"(max_lateness={late_limit}s)")
-        if starting and actual + exposure > nominal + period:
-            raise RuntimeError("Insufficient time for exposure before the next frame slot")
+        if starting and actual + exposure > nominal + period + late_limit:
+            raise RuntimeError("Insufficient time for exposure before the next frame slot plus tolerance")
         return actual
 
     def _wait_until(t0, nominal):

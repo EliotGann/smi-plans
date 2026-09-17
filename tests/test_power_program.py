@@ -176,16 +176,42 @@ def test_current_limit_set_once_immediately_before_single_enable(rig, limit):
     assert_restored(rig)
 
 
-def test_default_half_second_tolerance_at_one_second_cadence(rig):
+def test_default_one_second_tolerance_at_one_second_cadence(rig):
     rig.clock.acquisition = 0.5
-    rig.clock.write_delay = 0.4
+    rig.clock.write_delay = 0.8
     rig.RE(rig.plan(frame_period=1, exposure_time=0.5, hold_times=2))
     data = [d["data"] for d in events(rig)]
-    assert [d["elapsed_s"] for d in data] == pytest.approx([-1, 0, 1, 2.4, 3])
-    assert data[3]["timing_lateness_s"] == pytest.approx(0.4)
+    assert [d["elapsed_s"] for d in data] == pytest.approx([-1, 0, 1, 2.8, 3.3])
+    assert data[3]["timing_lateness_s"] == pytest.approx(0.8)
     md = next(d for n, d in rig.docs if n == "start")["sorensen_program"]
-    assert md["max_lateness"] == 0.5
+    assert md["max_lateness"] == 1.0
     assert md["current_limit"] == 0.1
+    assert_restored(rig)
+
+
+@pytest.mark.parametrize("tolerance,success", [(0.5, False), (1.5, True)])
+def test_user_tolerance_controls_late_voltage_step(rig, tolerance, success):
+    rig.clock.acquisition = 0.5
+    rig.clock.write_delay = 1.2
+    plan = rig.plan(frame_period=1, exposure_time=0.5, hold_times=2,
+                    max_lateness=tolerance, baseline_image=False)
+    if success:
+        rig.RE(plan)
+        assert len(events(rig)) == 4
+        assert events(rig)[2]["data"]["timing_lateness_s"] == pytest.approx(1.2)
+    else:
+        with pytest.raises(RuntimeError, match="cadence missed"):
+            rig.RE(plan)
+        assert len(events(rig)) == 2
+    assert_restored(rig)
+
+
+def test_sustained_overruns_still_accumulate(rig):
+    rig.clock.acquisition = 1.4
+    with pytest.raises(RuntimeError, match="cadence missed"):
+        rig.RE(rig.plan(voltages=[1], hold_times=[6], frame_period=1,
+                        exposure_time=0.5, baseline_image=False))
+    assert len(events(rig)) == 3  # completion is 1.2 s late after the third image
     assert_restored(rig)
 
 
@@ -194,7 +220,8 @@ def test_default_half_second_tolerance_at_one_second_cadence(rig):
     {"hold_times": [0, 4]}, {"voltages": [float("nan"), 1]},
     {"frame_period": 0}, {"frame_period": float("inf")}, {"exposure_time": -1},
     {"exposure_time": 2}, {"current_limit": 0}, {"max_lateness": -1},
-    {"max_lateness": 2}, {"detector": "unknown"}, {"dets": []},
+    {"max_lateness": float("inf")}, {"max_lateness": float("nan")},
+    {"detector": "unknown"}, {"dets": []},
 ])
 def test_validation_before_hardware_messages(rig, overrides):
     with pytest.raises(ValueError):
@@ -203,7 +230,7 @@ def test_validation_before_hardware_messages(rig, overrides):
 
 
 def test_slow_acquisition_fails_without_catchup(rig):
-    rig.clock.acquisition = 2.6
+    rig.clock.acquisition = 3.1
     with pytest.raises(RuntimeError, match="cadence missed"):
         rig.RE(rig.plan(baseline_image=False))
     assert len(events(rig)) == 1  # completed image retained; no catch-up or next voltage
@@ -222,7 +249,7 @@ def test_small_overhead_is_recorded_without_clock_drift(rig):
 
 
 def test_slow_voltage_write_fails_before_exposure(rig):
-    rig.clock.write_delay = 0.6
+    rig.clock.write_delay = 1.1
     with pytest.raises(RuntimeError, match="cadence missed"):
         rig.RE(rig.plan(baseline_image=False))
     assert len(events(rig)) == 2
@@ -439,7 +466,7 @@ def test_progress_text_and_quiet_mode(rig, capsys):
 
 
 def test_progress_failure_does_not_claim_completion(rig, capsys):
-    rig.clock.acquisition = 3
+    rig.clock.acquisition = 3.1
     with pytest.raises(RuntimeError, match="cadence missed"):
         rig.RE(rig.plan(baseline_image=False))
     text = capsys.readouterr().out
