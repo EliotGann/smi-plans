@@ -62,6 +62,7 @@ from ._holder import (  # noqa: F401  (pure loader; bluesky lazy in save/clear_a
     save_aligned,
     clear_aligned,
     sample_center,
+    select_samples,
 )
 from ._bar_helpers import (  # noqa: F401  (pure console/GUI helpers)
     POSITION_AXES,
@@ -84,6 +85,12 @@ from ._lists import (  # noqa: F401  (pure python; redis imported lazily in from
     ListStore,
     resolve_list,
 )
+from .grazing import (  # noqa: F401
+    AlignmentState, GrazingContext, GrazingScan, ScanCoverage,
+    capture_alignment, coverage_from_tiled, grazing_scan,
+)
+from .sampling import fresh_spot_grid  # noqa: F401
+from .diagnostics import recent_log_lines, run_timing  # noqa: F401
 
 # The peak/edge analyzer (pf).  Hard-imports only numpy; scipy/bokeh/databroker are lazy, so this
 # is safe to expose even off-beamline.  Guard anyway so a missing numpy never breaks the import.
@@ -123,6 +130,17 @@ __all__ = [
     "save_aligned",
     "clear_aligned",
     "sample_center",
+    "select_samples",
+    "AlignmentState",
+    "GrazingContext",
+    "GrazingScan",
+    "ScanCoverage",
+    "capture_alignment",
+    "coverage_from_tiled",
+    "grazing_scan",
+    "fresh_spot_grid",
+    "recent_log_lines",
+    "run_timing",
     "POSITION_AXES",
     "bar_name_tokens",
     "apply_name_prefix",

@@ -35,22 +35,29 @@ After install, `import smi_plans` works anywhere — no `sys.path` hacks.
 
 ## Quick start (in the beamline IPython session)
 
+For holder energy scans with alignment, before/after damage checks, selectable fast
+axis and recorded-point recovery, start with **[Reusable grazing workflows](docs/GRAZING_WORKFLOWS.md)**.
+The public `GrazingScan` + `GrazingContext` + `grazing_scan` API is designed for
+short user scripts and smi-acquire integration. See the
+[agent contract](docs/GRAZING_AGENT_CONTRACT.md) and
+[beamtime debrief](docs/BEAMTIME_DEBRIEF_2026_10.md).
+
 ```python
 from smi_plans._compose import acquire, energy_axis, temperature_axis, incidence_axis, motor_axis
 from smi_plans.technique_C_temperature import linkam_heater
 
 heater = linkam_heater()
-th0 = piezo.th.position
 axes = [
     temperature_axis(heater, [30, 60, 90]),                  # slow  -> outermost
-    motor_axis("arc", waxs, [0, 20], speed=2),               # slow, in-vacuum
-    incidence_axis(piezo.th, th0, [0.10, 0.20]),
+    motor_axis("arc", waxs.arc, [20], speed=2),              # simultaneous SAXS/WAXS
+    incidence_axis(stage.theta, None, [0.10, 0.20]),          # capture aligned zero lazily
     energy_axis(np.linspace(2470, 2490, 41),                 # DCM energy sweep
                 flux_signal=xbpm2.sumX, flux_threshold=50),
     motor_axis("x", piezo.x, [0, 30, 60, 90, 120], speed=0), # 5 fresh spots -> innermost
 ]
 RE(acquire("PS40nm", [pil2M, pil900KW, xbpm2, xbpm3], axes,
-           reads=[energy, waxs], setup=lambda: alignement_gisaxs_hex(0.1),
+           reads=[energy, waxs], align=lambda: alignement_gisaxs_hex(0.1),
+           setup=lambda: det_exposure_time(1, 1),
            geometry="reflection", scan_name="giwaxs_Tramp_NEXAFS_5loc",
            md={"project_name": "311234"}))
 ```
@@ -90,6 +97,13 @@ smi-plans/
 ```
 
 ## Docs & skills
+
+- [Script placement](docs/SCRIPT_PLACEMENT.md) — user-requested ad hoc scripts belong
+  in `~/SWAXS_user_scripts`; this repository contains reusable APIs and documentation.
+
+- `docs/GRAZING_WORKFLOWS.md` — reusable holder/subset, alignment, axis order and continuation recipes.
+- `docs/GRAZING_AGENT_CONTRACT.md` — stable metadata and builder integration contract.
+- `docs/SCAN_ERROR_RECOVERY.md` — bounded log inspection and evidence-based error triage.
 
 - `docs/PACKAGE_OVERVIEW.md` — the full reference: every module, the tenets, the filename
   templating contract, the manual/interactive layer, `multi_sample_run`/`RunRouter`.

@@ -702,7 +702,7 @@ def _region_value(region, key, default=None):
 ENERGY_TOL_eV = 0.05
 
 
-def move_energy_fb(target, *, settle=2.0):
+def move_energy_fb(target, *, settle=2.0, device=None):
     """Plan: move the DCM ``energy`` to ``target`` (eV).
 
     A plain, settle-guarded ``bps.mv(energy, target)``.  The beamline ``energy`` pseudo-positioner
@@ -728,18 +728,22 @@ def move_energy_fb(target, *, settle=2.0):
     settle : float
         Dwell (s) after the move (default 2), e.g. to let downstream optics/flux stabilize before
         measuring.  Set 0 to skip.
+    device : positioner, optional
+        Explicit energy device for library/worker contexts; otherwise uses the
+        profile-injected ``energy`` global. Harmonic policy remains device-owned.
     """
+    device = energy if device is None else device                 # noqa: F821
     target = float(target)
-    current = float((yield from bps.rd(energy)))                  # noqa: F821 (current energy, eV)
+    current = float((yield from bps.rd(device)))
     if abs(target - current) < ENERGY_TOL_eV:
         return                                                    # already there; nothing to do
-    yield from bps.mv(energy, target)                             # noqa: F821 (device owns gap/feedback)
+    yield from bps.mv(device, target)                             # device owns gap/feedback
     if settle:
         yield from bps.sleep(settle)
 
 
 def energy_axis(energies, *, settle=2.0, reverse_alternate=False, flux_signal=None,
-                flux_threshold=None, max_reseek=3, record_name="energy_set"):
+                flux_threshold=None, max_reseek=3, record_name="energy_set", device=None):
     """A DCM energy scan axis.  Records energy via a Signal so ``{energy_set}`` is a token.
 
     The DCM ``energy`` device itself is also typically in ``reads`` (giving ``{energy_energy}``);
@@ -765,11 +769,16 @@ def energy_axis(energies, *, settle=2.0, reverse_alternate=False, flux_signal=No
         Max re-seek attempts per point when ``flux_signal``/``flux_threshold`` are set.
     record_name : str
         Name of the recorded commanded-setpoint Signal (``{energy_set}``).
+    device : positioner, optional
+        Explicit energy device; defaults to the injected beamline ``energy``.
     """
-    sig = Signal(name=record_name, value=0.0)                     # noqa: F821
+    from ophyd import Signal
+
+    device = energy if device is None else device                 # noqa: F821
+    sig = Signal(name=record_name, value=0.0)
 
     def _move(value):
-        yield from move_energy_fb(value, settle=settle)
+        yield from move_energy_fb(value, settle=settle, device=device)
 
     def _per_point():
         if flux_signal is not None and flux_threshold is not None:
@@ -777,8 +786,8 @@ def energy_axis(energies, *, settle=2.0, reverse_alternate=False, flux_signal=No
             # read I0 via a message (bps.rd), decide, re-seek -- all message-based
             flux = yield from bps.rd(flux_signal)
             while flux < flux_threshold and tries < max_reseek:
-                target = yield from bps.rd(energy)               # noqa: F821 (current energy)
-                yield from move_energy_fb(target, settle=settle)  # re-seek (re-command + settle)
+                target = yield from bps.rd(device)
+                yield from move_energy_fb(target, settle=settle, device=device)
                 flux = yield from bps.rd(flux_signal)
                 tries += 1
         else:
@@ -787,7 +796,7 @@ def energy_axis(energies, *, settle=2.0, reverse_alternate=False, flux_signal=No
     return ScanAxis("energy", energies, move=_move,              # plain device move (gap/feedback owned)
                     record=sig, settle=0.0,                      # move_energy_fb already dwells
                     per_point=_per_point,
-                    reads=[energy],                              # noqa: F821 (gives {energy_energy})
+                    reads=[device],
                     speed=SPEED_MEDIUM, reverse_alternate=reverse_alternate)
 
 

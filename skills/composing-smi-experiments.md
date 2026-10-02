@@ -192,3 +192,16 @@ print("primary events:", sim.primary_events(msgs))
 ```
 
 See `tests/conftest.py` (the `SimBeamline` fixture) and `tests/test_smoke.py`.
+# Holder energy scans: reusable workflow
+
+**Placement:** create user-requested ad hoc experiment/setup/restart scripts in the
+`SWAXS_user_scripts` checkout (normally `~/SWAXS_user_scripts`), following its
+user-group/date conventions. Keep script tests and artifacts there too. Do not put
+one-off executable plans in `smi-plans/docs/`. See [SCRIPT_PLACEMENT.md](../docs/SCRIPT_PLACEMENT.md).
+
+Before generating an ad hoc grazing energy plan, consult
+[`docs/GRAZING_WORKFLOWS.md`](../docs/GRAZING_WORKFLOWS.md) and
+[`docs/GRAZING_AGENT_CONTRACT.md`](../docs/GRAZING_AGENT_CONTRACT.md).
+Prefer `GrazingScan`/`GrazingContext`/`grazing_scan` for the supported holder,
+alignment, checks and recovery topology; use the lower-level axes for other shapes.
+`fast_axis="energy"` conserves theta motion; it is independent of detector choice.

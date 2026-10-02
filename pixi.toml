@@ -14,9 +14,15 @@ bokeh = "*"
 pandas = "*"
 pytest = ">=7"
 ruff = "*"
+pyarrow = ">=25.0.0,<26"
+python-blosc2 = ">=4.14.0,<5"
 
 [pypi-dependencies]
 smi-plans = { path = ".", editable = true }
+redis = ">=8.1.0, <9"
+redis-json-dict = ">=0.2.2, <0.3"
+tiled = { version = ">=0.2.18, <0.3", extras = ["client"] }
+bluesky-tiled-plugins = ">=2.0.11, <3"
 
 [tasks]
 test = "pytest -q"

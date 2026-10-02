@@ -1,5 +1,16 @@
 # Beamline Question Triage
 
+Write user-requested ad hoc and numbered recovery scripts in `~/SWAXS_user_scripts`,
+with their snapshots/tests, rather than `smi-plans/docs/`. See
+[SCRIPT_PLACEMENT.md](../docs/SCRIPT_PLACEMENT.md) for repository ownership.
+
+For scan failures and continuation, use the concrete workflow in
+[`docs/SCAN_ERROR_RECOVERY.md`](../docs/SCAN_ERROR_RECOVERY.md). The reusable
+`recent_log_lines` helper reads a bounded tail without loading a whole log.
+New holder grazing plans and recovery records are documented in
+[`docs/GRAZING_AGENT_CONTRACT.md`](../docs/GRAZING_AGENT_CONTRACT.md).
+The historical proposal/status values below are examples, not current state.
+
 Draft skill notes for deciding whether the current user is asking an SMI beamline operational
 question.  This is not yet a strict opencode skill; it records the detection procedure and should
 be promoted once the approved answer patterns are reviewed.

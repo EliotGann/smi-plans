@@ -36,6 +36,7 @@ __all__ = [
     "save_aligned",
     "clear_aligned",
     "sample_center",
+    "select_samples",
 ]
 
 
@@ -105,6 +106,39 @@ def load_holder(holder_name, *, store=None, order_by_slot=True, require=True):
         raise KeyError("Holder {!r} ({}) has no samples.".format(holder_name, holder.id))
 
     return HolderBar(samples, store=store, holder=holder)
+
+
+def select_samples(samples, *, names=None, ids=None, pattern=None, exclude=()):
+    """Select a holder subset without changing its order or stored samples.
+
+    Choose at most one of exact (case-sensitive) ``names``, stable ``ids``, or a
+    shell-style name ``pattern``. Explicit missing/ambiguous names or IDs raise.
+    ``exclude`` contains exact names. No selector means all samples. Empty output
+    raises, rather than turning a misspelled selection into a silent no-op.
+    """
+    from fnmatch import fnmatchcase
+
+    samples = list(samples)
+    if sum(x is not None for x in (names, ids, pattern)) > 1:
+        raise ValueError("Choose only one of names, ids, or pattern")
+    field = "name" if names is not None else "id"
+    wanted = names if names is not None else ids
+    if wanted is not None:
+        wanted = [wanted] if isinstance(wanted, str) else list(wanted)
+        for key in wanted:
+            matches = [s for s in samples if getattr(s, field) == key]
+            if len(matches) != 1:
+                raise ValueError("Expected one sample with {}={!r}, found {}".format(field, key, len(matches)))
+        samples = [s for s in samples if getattr(s, field) in wanted]
+    elif pattern is not None:
+        samples = [s for s in samples if fnmatchcase(s.name, pattern)]
+    exclude = [exclude] if isinstance(exclude, str) else list(exclude)
+    samples = [s for s in samples if s.name not in exclude]
+    if not samples:
+        raise ValueError("Sample selection is empty")
+    if len({s.id for s in samples}) != len(samples):
+        raise ValueError("Sample selection contains duplicate IDs")
+    return samples
 
 
 # ---------------------------------------------------------------------------
