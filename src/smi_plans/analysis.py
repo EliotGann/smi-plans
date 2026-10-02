@@ -15,8 +15,10 @@ What it adds over ``ps``
 * **Robust field resolution** -- when the auto-detected intensity column is missing it raises a
   clear message that *lists the available columns* (instead of an opaque ``KeyError`` -- the
   "it's asking for a detector" symptom).
-* **Real model fits** with uncertainties: Gaussian / Lorentzian / Voigt for peaks (``auto``
-  picks the best by AIC) and an erf step for edges, via :func:`scipy.optimize.curve_fit`.
+* **Response-aware model fits**: Gaussian / Lorentzian / Voigt, asymmetric split Gaussian,
+  and erf steps. A Gaussian position spread defaults to 0.25 of the median scan spacing.
+  ``auto`` selects validated candidates by weighted AICc; rejected fits fall back to measured
+  statistics with a reason. Explicit model choices are validated too.
   Reports center, FWHM, amplitude, baseline *with ±1σ errors* and an R².
 * **Baseline-aware model-free stats** -- COM no longer skewed by background; sub-point PEAK by
   parabolic refinement.
@@ -46,13 +48,13 @@ Broader comparison against the profile-collection ``ps()`` helper is still pendi
 
 from __future__ import annotations
 
-import json
 import datetime as _dt
+import json
 import math
 import os
 import warnings
-from dataclasses import dataclass, field, asdict
-from typing import Optional, Sequence
+from dataclasses import asdict, dataclass, field
+from typing import Optional
 
 import numpy as np
 
@@ -88,6 +90,12 @@ class PeakResult:
     model_name: str = "none"            # gaussian | lorentzian | voigt | erf | none
     derivative: bool = False
     normalized: bool = False
+    x_sigma: float = 0.0               # Gaussian averaging spread, in motor units
+    x_sigma_source: str = "explicit"   # "auto" | "explicit"
+    symmetry: str = "symmetric"
+    fit_success: bool = False
+    fit_status: str = "not_attempted"
+    fit_diagnostics: dict = field(default_factory=dict)
 
     # headline numbers (ps-compatible)
     peak: float = float("nan")          # x of the maximum (model-free, parabola-refined)
@@ -96,11 +104,15 @@ class PeakResult:
     fwhm: float = float("nan")          # best FWHM: fit if available else half-max width
 
     # fit detail
-    amplitude: float = float("nan")
+    amplitude: float = float("nan")    # signed response height (erf: half-step amplitude)
     baseline: float = float("nan")
     cen_err: float = float("nan")
     fwhm_err: float = float("nan")
     r_squared: float = float("nan")
+    fit_peak: float = float("nan")     # maximum of the measurement-broadened model
+    intrinsic_fwhm: float = float("nan")  # omitted when deconvolution is unresolved
+    area_ratio: float = float("nan")
+    reduced_chi_squared: float = float("nan")
 
     # model-free cross-checks (always present)
     cen_halfmax: float = float("nan")
@@ -138,7 +150,7 @@ class PeakResult:
 
     def summary(self):
         """One-line human summary."""
-        return (
+        text = (
             "scan {sid} | {mot} vs {det} | {kind}/{mdl} | "
             "cen={cen:.5g}±{cerr:.2g} fwhm={fw:.4g} fw_base={fwb:.4g} "
             "cen_base={cenb:.5g} peak={pk:.5g} com={com:.5g} R²={r:.4f}"
@@ -148,6 +160,9 @@ class PeakResult:
             cen=self.cen, cerr=self.cen_err, fw=self.fwhm,
             fwb=self.fw_base, cenb=self.cen_base, pk=self.peak, com=self.com, r=self.r_squared,
         )
+        if self.fit_status == "rejected":
+            text += " | warning: " + self.message
+        return text
 
     def __repr__(self):
         return "PeakResult({})".format(self.summary())
@@ -175,6 +190,74 @@ def _voigt(x, amp, cen, sigma, gamma, base):
 def _erf_step(x, amp, cen, k, base):
     from scipy.special import erf
     return base + amp * erf(k * (x - cen))
+
+
+def _split_gaussian(x, amp, cen, sigma_left, sigma_right, base):
+    sigma = np.where(np.asarray(x) < cen, sigma_left, sigma_right)
+    return _gaussian(x, amp, cen, sigma, base)
+
+
+def _response_model(name, x_sigma):
+    """Analytic Gaussian convolution; amplitudes parameterize the intrinsic profile.
+
+    This models averaging during exposure, not unknown fixed position offsets. Exact
+    convolutions avoid quadrature missing an unresolved spike between integration nodes.
+    """
+    from scipy.special import ndtr, voigt_profile
+
+    def response(x, *p):
+        amp, cen, *shape, base = p
+        q = x_sigma
+        if name == "gaussian":
+            s, = shape
+            w = np.hypot(s, q)
+            return _gaussian(x, amp * s / w, cen, w, base)
+        if name == "lorentzian":
+            gamma, = shape
+            return base + amp * np.pi * gamma * voigt_profile(np.asarray(x) - cen, q, gamma)
+        if name == "voigt":
+            s, gamma = shape
+            return base + amp * voigt_profile(np.asarray(x) - cen, np.hypot(s, q), gamma) / voigt_profile(0, s, gamma)
+        if name == "erf":
+            k, = shape
+            return _erf_step(x, amp, cen, k / np.sqrt(1 + 2 * (k * q) ** 2), base)
+        sl, sr = shape
+        if q == 0:
+            return _split_gaussian(x, *p)
+        z = np.asarray(x) - cen
+        result = np.zeros_like(z, dtype=float)
+        for s, sign in ((sl, -1), (sr, 1)):
+            w = np.hypot(s, q)
+            result += s / w * np.exp(-0.5 * (z / w) ** 2) * ndtr(sign * z * s / (q * w))
+        return base + amp * result
+
+    return response
+
+
+def _resolve_fit_options(x, model, profile, symmetry, x_sigma, x_sigma_fraction, der):
+    if model not in {"auto", "none", "gaussian", "lorentzian", "voigt", "erf", "split_gaussian"}:
+        raise ValueError(f"unknown model: {model!r}")
+    if profile not in {"auto", "peak", "edge"}:
+        raise ValueError("profile must be 'auto', 'peak', or 'edge'")
+    if symmetry not in {"symmetric", "asymmetric"}:
+        raise ValueError("symmetry must be 'symmetric' or 'asymmetric'")
+    if (profile == "edge" and (der or model not in {"auto", "none", "erf"})) or (profile == "peak" and model == "erf"):
+        raise ValueError("profile conflicts with model/derivative selection")
+    if symmetry == "asymmetric" and (profile == "edge" or model not in {"auto", "none", "split_gaussian"}):
+        raise ValueError("asymmetric peaks require model='auto', 'none', or 'split_gaussian'")
+    fraction = float(x_sigma_fraction)
+    if not np.isfinite(fraction) or fraction < 0:
+        raise ValueError("x_sigma_fraction must be finite and nonnegative")
+    steps = np.diff(np.unique(x))
+    step = float(np.median(steps)) if len(steps) else 0.0
+    source = "auto" if isinstance(x_sigma, str) and x_sigma == "auto" else "explicit"
+    try:
+        sigma = fraction * step if source == "auto" else float(x_sigma)
+    except (TypeError, ValueError):
+        raise ValueError("x_sigma must be 'auto' or a finite nonnegative scalar") from None
+    if not np.isfinite(sigma) or sigma < 0:
+        raise ValueError("x_sigma must be 'auto' or a finite nonnegative scalar")
+    return sigma, source, step
 
 
 _GAUSS_FWHM = 2.0 * math.sqrt(2.0 * math.log(2.0))   # sigma -> FWHM
@@ -405,19 +488,144 @@ def _fit_one(func, x, y, p0, yerr, bounds):
     ss_tot = float(np.sum((y - np.mean(y)) ** 2)) or 1.0
     r2 = 1.0 - ss_res / ss_tot
     n, k = len(x), len(popt)
-    # AIC for least-squares; smaller is better.  Guard ss_res==0.
-    aic = n * math.log(ss_res / n) + 2 * k if ss_res > 0 else -math.inf
+    weighted = "sigma" in kw
+    chi2 = float(np.sum((resid / yerr) ** 2)) if weighted else ss_res
+    # Same likelihood as the optimizer; known sigmas give chi2 + 2k (up to a constant).
+    aic = chi2 + 2 * k if weighted else n * math.log(max(ss_res / n, 1e-300)) + 2 * k
+    if n > k + 1:
+        aic += 2 * k * (k + 1) / (n - k - 1)  # small-sample AICc
     with np.errstate(invalid="ignore"):
         perr = np.sqrt(np.diag(pcov))
-    return dict(popt=popt, perr=perr, pcov=pcov, r2=r2, aic=aic, func=func)
+    return dict(popt=popt, perr=perr, pcov=pcov, r2=r2, aic=aic, func=func,
+                reduced_chi2=chi2 / max(n - k, 1), bounds=bounds)
 
 
-def _band_from_cov(func, x, popt, pcov, nsamples=200):
+def _profile_geometry(name, p, q):
+    """Measurement-response center, width, mode, height and intrinsic width.
+
+    For asymmetric peaks 'center' is the half-height midpoint, not the mode.
+    The erf width retains the historical ~8--92% transition-width convention.
+    """
+    from scipy.optimize import brentq, minimize_scalar
+    amp, cen, *shape, base = p
+    func = _response_model(name, q)
+    if name == "erf":
+        k, = shape
+        return cen, 2 * np.sqrt(1 + 2 * (k * q) ** 2) / k, cen, abs(amp), 2 / k
+    if name == "gaussian":
+        s, = shape
+        width, intrinsic = _GAUSS_FWHM * np.hypot(s, q), _GAUSS_FWHM * s
+    elif name == "lorentzian":
+        g, = shape
+        width, intrinsic = _voigt_fwhm(q, g), 2 * g
+    elif name == "voigt":
+        s, g = shape
+        width, intrinsic = _voigt_fwhm(np.hypot(s, q), g), _voigt_fwhm(s, g)
+    else:
+        sl, sr = shape
+        extent = 12 * max(sl, sr, q)
+        sign = 1 if amp >= 0 else -1
+        mode = minimize_scalar(lambda z: -sign * (func(z, *p) - base),
+                               bounds=(cen - extent, cen + extent), method="bounded",
+                               options={"xatol": max(extent * 1e-10, 1e-14)}).x
+        height = abs(float(func(mode, *p) - base))
+        half = lambda z: sign * (func(z, *p) - base) - height / 2
+        left = brentq(half, cen - extent, mode)
+        right = brentq(half, mode, cen + extent)
+        return (left + right) / 2, right - left, mode, height, _GAUSS_FWHM * (sl + sr) / 2
+    return cen, width, cen, abs(float(func(cen, *p) - base)), intrinsic
+
+
+def _geometry_errors(fit, q, step):
+    """Delta-method covariance for observable midpoint and width (not intrinsic widths)."""
+    p = fit["popt"]
+    def geometry(params):
+        return np.array(_profile_geometry(fit["name"], params, q)[:2])
+    jac = np.empty((2, len(p)))
+    for j in range(len(p)):
+        h = 1e-5 * max(abs(p[j]), step, 1e-8)
+        plus, minus = p.copy(), p.copy()
+        plus[j] += h
+        minus[j] -= h
+        if 2 <= j < len(p) - 1:
+            minus[j] = max(minus[j], p[j] / 2)
+        jac[:, j] = (geometry(plus) - geometry(minus)) / (plus[j] - minus[j])
+    covariance = jac @ fit["pcov"] @ jac.T
+    return np.sqrt(np.maximum(np.diag(covariance), 0))
+
+
+def _validate_fit(fit, x, y, mf, q, step, is_edge, polarity):
+    """Conservative, scale-aware acceptance checks, also used for explicitly chosen models."""
+    from scipy.integrate import quad, trapezoid
+    name, p, func = fit["name"], fit["popt"], fit["func"]
+    reasons = []
+    cen, width, mode, height, intrinsic = _profile_geometry(name, p, q)
+    span = float(np.ptp(y))
+    base = float(p[-1])
+    predicted = func(x, *p)
+    relative_rmse = float(np.sqrt(np.mean((predicted - y) ** 2)) / span)
+    if relative_rmse > 0.08 or (fit["reduced_chi2"] > 10 and relative_rmse > 0.02):
+        reasons.append("residuals inconsistent with the measured profile")
+    lo, hi = map(np.asarray, fit["bounds"])
+    # Zero Lorentzian content in a Voigt is legitimate; upper-bound amplitudes/widths are not.
+    pinned = np.any((hi[:-1] - p[:-1]) <= 1e-5 * (hi[:-1] - lo[:-1]))
+    if pinned:
+        reasons.append("fit parameter at upper bound")
+    cerr, werr = _geometry_errors(fit, q, step)
+    if not np.all(np.isfinite(fit["pcov"])) or not np.all(np.isfinite([cerr, werr])) or cerr > width / 4 or werr > width / 2:
+        reasons.append("fit parameters poorly constrained")
+    if not x[0] + step / 2 < cen < x[-1] - step / 2:
+        reasons.append("center not supported inside the sampled range")
+    area_ratio = float("nan")
+    if is_edge:
+        amp, center, k, base = p
+        effective_k = k / np.sqrt(1 + 2 * (k * q) ** 2)
+        # Require both ~8/92% points inside the scan, and samples through the transition.
+        if center - 1 / effective_k < x[0] or center + 1 / effective_k > x[-1]:
+            reasons.append("edge plateaus not bracketed by the scan")
+        fraction = (predicted - (base - amp)) / (2 * amp)
+        if np.count_nonzero((fraction > 0.08) & (fraction < 0.92)) < 3:
+            reasons.append("edge transition undersampled")
+        if np.max(predicted) > np.max(y) + 0.25 * span or np.min(predicted) < np.min(y) - 0.25 * span:
+            reasons.append("edge amplitude outside the measured range")
+    else:
+        signal = polarity * y - mf["baseline"]
+        high = signal > 0.5 * np.max(signal)
+        needed = 4 if name == "split_gaussian" else 3
+        near = x[signal > 0.1 * np.max(signal)]
+        local_step = float(np.median(np.diff(np.unique(near)))) if len(np.unique(near)) > 1 else step
+        if len(np.unique(x[high])) < needed or width < 2 * local_step:
+            reasons.append("peak undersampled")
+        if not np.isfinite(mf["fwhm_halfmax"]) or not x[0] < cen - width / 2 < cen + width / 2 < x[-1]:
+            reasons.append("peak half-height crossings not bracketed")
+        if height > 1.5 * np.max(signal) or height < 0.5 * np.max(signal):
+            reasons.append("fitted peak height outside the measured range")
+        measured_area = float(trapezoid(np.clip(signal, 0, None), x))
+        fit_area = quad(lambda z: polarity * float(func(z, *p) - base), x[0], x[-1],
+                        points=[mode], epsabs=max(measured_area * 1e-7, 1e-12))[0]
+        area_ratio = fit_area / measured_area if measured_area > 0 else float("nan")
+        if not 0.67 <= area_ratio <= 1.5:
+            reasons.append("fit/data area mismatch")
+        if p[0] * polarity <= 0:
+            reasons.append("wrong peak polarity")
+    return {"reasons": reasons, "cen": float(cen), "fwhm": float(width), "peak": float(mode),
+            "height": float(height), "intrinsic_fwhm": float(intrinsic), "area_ratio": area_ratio,
+            "cen_err": float(cerr), "fwhm_err": float(werr),
+            "reduced_chi_squared": float(fit["reduced_chi2"]), "relative_rmse": relative_rmse,
+            "aicc": float(fit["aic"])}
+
+
+def _band_from_cov(func, x, popt, pcov, nsamples=200, bounds=None):
     """Monte-Carlo 1σ confidence band: sample params ~ N(popt, pcov), take 16/84 percentiles."""
     try:
         if not np.all(np.isfinite(pcov)):
             raise ValueError
         draws = np.random.multivariate_normal(popt, pcov, size=nsamples)
+        if bounds is not None:
+            lo, hi = map(np.asarray, bounds)
+            draws = draws[np.all((draws >= lo) & (draws <= hi), axis=1)]
+            if len(draws) < 10:
+                raise ValueError("insufficient physical covariance samples")
         curves = np.array([func(x, *p) for p in draws])
         lo = np.nanpercentile(curves, 16, axis=0)
         hi = np.nanpercentile(curves, 84, axis=0)
@@ -440,6 +648,10 @@ def analyze_xy(
     baseline_sigma: float = 3.0,
     baseline_merge_sigma: float = 1.0,
     baseline_smooth: int = 3,
+    x_sigma="auto",
+    x_sigma_fraction: float = 0.25,
+    profile: str = "auto",
+    symmetry: str = "symmetric",
     **context,
 ):
     """Analyze a 1-D line profile.  Pure: no db, no plotting.
@@ -455,7 +667,9 @@ def analyze_xy(
         Analyze the derivative ``dy/dx`` (for edge -> peak alignment), like ``ps(der=True)``.
     model : str
         ``"auto"`` (default), ``"gaussian"``, ``"lorentzian"``, ``"voigt"``, ``"erf"`` or
-        ``"none"`` (model-free only).  For peaks ``"auto"`` tries G/L/V and keeps the best AIC.
+        ``"split_gaussian"`` or ``"none"`` (model-free only). For symmetric peaks ``"auto"``
+        tries G/L/V and keeps the best validated weighted AICc. Derivatives use midpoint
+        finite differences divided by spacing; their point errors ignore adjacent correlations.
     smooth : bool
         Savitzky-Golay smooth before differentiating (tames noisy ``der``).
     baseline_sigma : float
@@ -465,6 +679,17 @@ def analyze_xy(
         support.
     baseline_smooth : int
         Median-filter window used only for baseline-threshold edge decisions.
+    x_sigma : "auto" or nonnegative float
+        Gaussian position-averaging standard deviation in motor units. ``"auto"`` assumes
+        ``x_sigma_fraction`` times the median nonzero spacing. Zero gives point sampling.
+        This is an exposure-response assumption, not an errors-in-variables position fit.
+    x_sigma_fraction : float
+        Fraction of the step used by ``x_sigma="auto"`` (default 0.25).
+    profile : "auto" | "peak" | "edge"
+        Physical profile hint. ``"peak"`` prevents automatic edge classification.
+    symmetry : "symmetric" | "asymmetric"
+        ``"asymmetric"`` fits a Gaussian with independent left/right widths. Its center is
+        the response's half-height midpoint; ``fit_peak`` is its mode.
     **context
         Optional ``scan_id``/``uid``/``motor``/``detector``/``timestamp``/``normalized`` carried
         straight into the :class:`PeakResult`.
@@ -476,6 +701,8 @@ def analyze_xy(
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
     yerr = None if yerr is None else np.asarray(yerr, dtype=float)
+    if x.ndim != 1 or y.shape != x.shape or (yerr is not None and yerr.shape != x.shape):
+        raise ValueError("x, y, and yerr must be matching one-dimensional arrays")
 
     # sort by x and drop non-finite samples
     order = np.argsort(x)
@@ -487,6 +714,9 @@ def analyze_xy(
     if yerr is not None:
         yerr = yerr[good]
 
+    q, q_source, step = _resolve_fit_options(
+        x, model, profile, symmetry, x_sigma, x_sigma_fraction, der)
+
     res = PeakResult(
         derivative=der,
         scan_id=context.get("scan_id"),
@@ -495,6 +725,8 @@ def analyze_xy(
         detector=context.get("detector"),
         timestamp=context.get("timestamp"),
         normalized=bool(context.get("normalized", False)),
+        x_sigma=q, x_sigma_source=q_source,
+        symmetry="asymmetric" if model == "split_gaussian" else symmetry,
     )
 
     if len(x) < 3:
@@ -513,9 +745,17 @@ def analyze_xy(
                     y = savgol_filter(y, win, 2)
             except Exception:
                 pass
-        y = np.diff(y)
-        x = x[1:]
-        yerr = None  # error propagation through diff is not meaningful here
+        dx = np.diff(x)
+        distinct = dx > 0
+        # Adjacent differences live at interval midpoints, including nonuniform scans.
+        raw_err = yerr if yerr is not None else np.sqrt(np.clip(np.abs(y), 1.0, None))
+        yerr = np.hypot(raw_err[:-1], raw_err[1:])[distinct] / dx[distinct]
+        y = np.diff(y)[distinct] / dx[distinct]
+        x = (0.5 * (x[:-1] + x[1:]))[distinct]
+        if len(x) < 3:
+            res.x, res.y, res.yerr = x, y, yerr
+            res.message = "not enough distinct positions for derivative analysis"
+            return res
 
     # default Poisson errors for fit weighting (counts-like)
     if yerr is None:
@@ -555,14 +795,36 @@ def analyze_xy(
     res.yerr = fit_err
 
     # ---- decide profile kind ----
-    is_edge = (model == "erf") or (model == "auto" and not der and _looks_like_edge(x, y))
+    is_edge = (model == "erf" or profile == "edge" or
+               (model == "auto" and profile == "auto" and symmetry == "symmetric"
+                and not der and _looks_like_edge(x, y)))
     res.profile_kind = "edge" if is_edge else "peak"
 
+    if is_edge:
+        # A model-free edge has a measured midpoint only when both plateaus are evident.
+        nend = max(2, len(x) // 6)
+        left, right = np.median(y[:nend]), np.median(y[-nend:])
+        noise = max(_mad_sigma(y[:nend]), _mad_sigma(y[-nend:]), 1e-12)
+        level = (left + right) / 2
+        crossings = [x[i - 1] + (level - y[i - 1]) * (x[i] - x[i - 1]) / (y[i] - y[i - 1])
+                     for i in range(1, len(x)) if (y[i - 1] < level) != (y[i] < level)
+                     and y[i] != y[i - 1]]
+        plateau_ok = (abs(right - left) > 6 * noise and
+                      max(np.ptp(y[:nend]), np.ptp(y[-nend:])) < 0.2 * abs(right - left))
+        res.cen = float(np.median(crossings)) if plateau_ok and crossings else float("nan")
+        res.fwhm = float("nan")
+
     if model == "none":
+        res.fit_status = "model_free"
         res.message = "model-free only"
         return res
 
     span = float(np.max(y) - np.min(y))
+    if span <= 0 or step <= 0:
+        res.cen = res.fwhm = float("nan")
+        res.fit_status = "rejected"
+        res.message = "flat signal or zero scan range; center/width unavailable"
+        return res
     width0 = mf["fwhm_halfmax"]
     if not np.isfinite(width0) or width0 <= 0:
         width0 = 0.25 * (x[-1] - x[0])
@@ -572,25 +834,19 @@ def analyze_xy(
     base0 = mf["baseline"] / peak_polarity
     dx_total = abs(x[-1] - x[0]) or 1.0
 
-    best = None
+    fits = {}
     if is_edge:
         # erf edge: amplitude ~ half the step; sign allows rising or falling edges
         rising = np.mean(y[-3:]) >= np.mean(y[:3])
         amp0 = 0.5 * span * (1.0 if rising else -1.0)
         k0 = 4.0 / dx_total
-        p0 = [amp0, cen0, k0, base0 + 0.5 * span]
+        cen0 = res.cen if np.isfinite(res.cen) else float(x[np.argmin(abs(y - (np.min(y) + span / 2)))])
+        p0 = [amp0, cen0, k0, np.min(y) + 0.5 * span]
         bounds = ([-2 * span - 1, x[0], 0, np.min(y) - span],
                   [2 * span + 1, x[-1], 1e6 / dx_total, np.max(y) + span])
-        best = _fit_one(_erf_step, x, y, p0, fit_err, bounds)
-        if best is not None:
-            best["name"] = "erf"
-            amp, cen, k, base = best["popt"]
-            res.amplitude, res.cen, res.baseline = float(amp), float(cen), float(base)
-            res.cen_err = float(best["perr"][1])
-            # erf "width": x-distance over which it goes 8%->92% (~ erf arg ±1)
-            res.fwhm = float(2.0 / k) if k else float("nan")
-            res.fwhm_err = (float(2.0 * best["perr"][2] / k ** 2)
-                            if k and np.isfinite(best["perr"][2]) else float("nan"))
+        fit = _fit_one(_response_model("erf", q), x, y, p0, fit_err, bounds)
+        if fit is not None:
+            fits["erf"] = fit
     else:
         sigma0 = max(width0 / _GAUSS_FWHM, 1e-6)
         amp0 = peak_polarity * max(span, 1e-9)
@@ -598,57 +854,73 @@ def analyze_xy(
         amp_low = -10 * amp_abs0 - 1 if der else 0.0
         amp_high = 10 * amp_abs0 + 1
         base_high = np.max(y) + span if der else np.max(y)
-        candidates = {"gaussian": _gaussian, "lorentzian": _lorentzian, "voigt": _voigt}
-        if model in candidates:
-            candidates = {model: candidates[model]}
-        fits = {}
-        for name, func in candidates.items():
+        # Counts-like, nonnegative inputs cannot have a negative physical background.
+        base_low = 0.0 if not der and np.all(y >= 0) else np.min(y) - span
+        candidates = ["gaussian", "lorentzian", "voigt"]
+        if symmetry == "asymmetric":
+            candidates = ["split_gaussian"]
+        if model != "auto":
+            candidates = [model]
+        for name in candidates:
             if name == "gaussian":
                 p0 = [amp0, cen0, sigma0, base0]
-                bounds = ([amp_low, x[0], 1e-9, np.min(y) - span],
+                bounds = ([amp_low, x[0], 1e-9, base_low],
                           [amp_high, x[-1], 10 * dx_total, base_high])
             elif name == "lorentzian":
                 p0 = [amp0, cen0, max(width0 / 2, 1e-6), base0]
-                bounds = ([amp_low, x[0], 1e-9, np.min(y) - span],
+                bounds = ([amp_low, x[0], 1e-9, base_low],
                           [amp_high, x[-1], 10 * dx_total, base_high])
-            else:  # voigt
-                p0 = [amp0, cen0, sigma0, max(width0 / 4, 1e-6), base0]
-                bounds = ([amp_low, x[0], 1e-9, 1e-9, np.min(y) - span],
+            else:  # voigt or split Gaussian
+                second_width = sigma0 if name == "split_gaussian" else max(width0 / 4, 1e-6)
+                p0 = [amp0, cen0, sigma0, second_width, base0]
+                bounds = ([amp_low, x[0], 1e-9, 1e-9, base_low],
                           [amp_high, x[-1], 10 * dx_total, 10 * dx_total, base_high])
-            fit = _fit_one(func, x, y, p0, fit_err, bounds)
+            fit = _fit_one(_response_model(name, q), x, y, p0, fit_err, bounds)
             if fit is not None:
-                fit["name"] = name
                 fits[name] = fit
-        if fits:
-            best = min(fits.values(), key=lambda f: f["aic"])
-            name = best["name"]
-            popt, perr = best["popt"], best["perr"]
-            if name == "gaussian":
-                amp, cen, sigma, base = popt
-                res.fwhm = float(_GAUSS_FWHM * abs(sigma))
-                res.fwhm_err = float(_GAUSS_FWHM * perr[2]) if np.isfinite(perr[2]) else float("nan")
-            elif name == "lorentzian":
-                amp, cen, gamma, base = popt
-                res.fwhm = float(2.0 * abs(gamma))
-                res.fwhm_err = float(2.0 * perr[2]) if np.isfinite(perr[2]) else float("nan")
-            else:  # voigt
-                amp, cen, sigma, gamma, base = popt
-                res.fwhm = float(_voigt_fwhm(sigma, gamma))
-                res.fwhm_err = float("nan")
-            res.amplitude, res.cen, res.baseline = float(amp), float(cen), float(base)
-            res.cen_err = float(perr[1]) if np.isfinite(perr[1]) else float("nan")
+
+    accepted = []
+    for name, fit in fits.items():
+        fit["name"] = name
+        try:
+            diagnostics = _validate_fit(fit, x, y, mf, q, step, is_edge, peak_polarity)
+        except (ValueError, FloatingPointError, ZeroDivisionError):
+            diagnostics = {"reasons": ["invalid fitted geometry"]}
+        res.fit_diagnostics[name] = diagnostics
+        if not diagnostics["reasons"]:
+            accepted.append(fit)
+    best = min(accepted, key=lambda f: f["aic"]) if accepted else None
 
     if best is not None:
+        p = best["popt"]
+        d = res.fit_diagnostics[best["name"]]
         res.model_name = best["name"]
+        res.fit_success = True
+        res.fit_status = "accepted"
+        res.cen, res.fwhm, res.fit_peak = d["cen"], d["fwhm"], d["peak"]
+        res.amplitude = float(np.sign(p[0]) * d["height"])
+        res.baseline = float(p[-1])
+        res.area_ratio = d["area_ratio"]
+        res.reduced_chi_squared = d["reduced_chi_squared"]
+        res.cen_err, res.fwhm_err = d["cen_err"], d["fwhm_err"]
+        if d["intrinsic_fwhm"] > max(_GAUSS_FWHM * q, 2 * res.fwhm_err):
+            res.intrinsic_fwhm = d["intrinsic_fwhm"]
         res.r_squared = float(best["r2"])
         fx = np.linspace(x[0], x[-1], 400)
         res.fit_x = fx
         res.fit_y = best["func"](fx, *best["popt"])
-        res.fit_lo, res.fit_hi = _band_from_cov(best["func"], fx, best["popt"], best["pcov"])
-        res.message = "fit ok"
+        res.fit_lo, res.fit_hi = _band_from_cov(best["func"], fx, best["popt"], best["pcov"],
+                                               bounds=best["bounds"])
+        res.message = "fit accepted (Gaussian position-averaging response)"
     else:
         res.model_name = "none"
-        res.message = "fit did not converge; reporting model-free stats"
+        res.fit_status = "rejected"
+        if fits:
+            attempted = min(fits, key=lambda name: fits[name]["aic"])
+            reasons = res.fit_diagnostics[attempted]["reasons"]
+            res.message = "{} fit rejected: {}; using model-free statistics".format(attempted, "; ".join(reasons))
+        else:
+            res.message = "fit did not converge; using model-free statistics"
 
     return res
 
@@ -690,7 +962,11 @@ def make_figure(result: PeakResult, logy: bool = False, title: Optional[str] = N
     yerr = np.asarray(r.yerr) if len(r.yerr) == len(y) else np.zeros_like(y)
     lower = y - yerr
     upper = y + yerr
-    src = ColumnDataSource(dict(x=x, y=y, lower=lower, upper=upper))
+    src = ColumnDataSource(dict(x=x, y=y, lower=lower, upper=upper,
+                                xlo=x - r.x_sigma, xhi=x + r.x_sigma))
+    if r.x_sigma > 0:
+        p.add_layout(Whisker(base="y", lower="xlo", upper="xhi", source=src,
+                             dimension="width", line_color="#1f77b4", line_alpha=0.4))
 
     # --- shaded data error band (Poisson / supplied) ---
     if np.any(yerr > 0) and not logy:
@@ -711,7 +987,7 @@ def make_figure(result: PeakResult, logy: bool = False, title: Optional[str] = N
             p.add_layout(Band(base="x", lower="lo", upper="hi", source=fsrc,
                               fill_color="#d62728", fill_alpha=0.15, line_width=0))
         p.line("x", "y", source=fsrc, line_color="#d62728", line_width=2.5,
-               legend_label="fit: {} (R²={:.4f})".format(r.model_name, r.r_squared))
+               legend_label=f"response fit: {r.model_name} (R²={r.r_squared:.4f})")
 
     # --- data points ---
     data_glyph = p.scatter("x", "y", source=src, size=7, marker="circle",
@@ -745,7 +1021,10 @@ def make_figure(result: PeakResult, logy: bool = False, title: Optional[str] = N
         "PEAK : {}".format(_fmt(r.peak)),
         "COM  : {}".format(_fmt(r.com)),
         "R²   : {}".format(_fmt(r.r_squared)),
+        f"x σ  : {_fmt(r.x_sigma)} ({r.x_sigma_source})",
     ]
+    if r.fit_status == "rejected":
+        lines.append("fit rejected; model-free statistics")
     label = Label(x=10, y=height - 130, x_units="screen", y_units="screen",
                   text="\n".join(lines), text_font_size="10pt",
                   text_font="monospace", background_fill_color="white",
@@ -946,6 +1225,10 @@ class LivePF:
         publish_password=None,
         publish_secret_path="/etc/bluesky/redis.secret",
         print_summary=True,
+        x_sigma="auto",
+        x_sigma_fraction=0.25,
+        profile="auto",
+        symmetry="symmetric",
     ):
         self.det = det
         self.suffix = suffix
@@ -953,6 +1236,10 @@ class LivePF:
         self.der = der
         self.model = model
         self.smooth = smooth
+        self.x_sigma = x_sigma
+        self.x_sigma_fraction = x_sigma_fraction
+        self.profile = profile
+        self.symmetry = symmetry
         self.baseline_sigma = baseline_sigma
         self.baseline_merge_sigma = baseline_merge_sigma
         self.baseline_smooth = baseline_smooth
@@ -1094,6 +1381,8 @@ class LivePF:
             der=self.der, model=self.model, smooth=self.smooth,
             baseline_sigma=self.baseline_sigma, baseline_merge_sigma=self.baseline_merge_sigma,
             baseline_smooth=self.baseline_smooth,
+            x_sigma=self.x_sigma, x_sigma_fraction=self.x_sigma_fraction,
+            profile=self.profile, symmetry=self.symmetry,
             scan_id=start.get("scan_id"), uid=start.get("uid"),
             motor=self.motor, detector=self.detector, timestamp=ts,
             normalized=self.norm_field is not None,
@@ -1167,6 +1456,10 @@ def pf(
     publish_ssl=True,
     publish_password=None,
     publish_secret_path="/etc/bluesky/redis.secret",
+    x_sigma="auto",
+    x_sigma_fraction=0.25,
+    profile="auto",
+    symmetry="symmetric",
 ):
     """Quick friendly display + peak/edge fit of a scan (a web-ready ``ps`` replacement).
 
@@ -1182,7 +1475,13 @@ def pf(
     der : bool
         Analyze the derivative (edge -> peak), like ``ps(der=True)``.
     model : str
-        ``"auto"`` | ``"gaussian"`` | ``"lorentzian"`` | ``"voigt"`` | ``"erf"`` | ``"none"``.
+        ``"auto"`` | ``"gaussian"`` | ``"lorentzian"`` | ``"voigt"`` | ``"split_gaussian"`` |
+        ``"erf"`` | ``"none"``. All fits are validated before replacing model-free statistics.
+    x_sigma, x_sigma_fraction, profile, symmetry
+        Position-response assumption and physical hints; see :func:`analyze_xy`.
+        Default response sigma is 0.25 times the median nonzero motor spacing. For known
+        asymmetric peaks use ``profile="peak", symmetry="asymmetric"``. The reported fit
+        width describes the measurement-broadened profile, not its deconvolved width.
     smooth : bool
         Savitzky-Golay smooth before differentiating.
     baseline_sigma, baseline_merge_sigma, baseline_smooth
@@ -1231,6 +1530,7 @@ def pf(
         x, y, yerr=yerr, der=der, model=model, smooth=smooth,
         baseline_sigma=baseline_sigma, baseline_merge_sigma=baseline_merge_sigma,
         baseline_smooth=baseline_smooth,
+        x_sigma=x_sigma, x_sigma_fraction=x_sigma_fraction, profile=profile, symmetry=symmetry,
         scan_id=start.get("scan_id"), uid=start.get("uid"),
         motor=motor, detector=det_name, timestamp=ts, normalized=normalized,
     )
@@ -1245,6 +1545,7 @@ def pf(
     pf.cen_base = result.cen_base
     pf.cen_err = result.cen_err
     pf.r_squared = result.r_squared
+    pf.fit_success = result.fit_success
 
     print(result.summary())
 
@@ -1270,6 +1571,7 @@ def pf(
             print("  (publish failed: {}: {})".format(type(exc).__name__, exc))
 
     fig = None
+    pf.figure = None
     if plot:
         fig = make_figure(result, logy=logy)
         pf.figure = fig
@@ -1302,3 +1604,4 @@ pf.fw_base = float("nan")
 pf.cen_base = float("nan")
 pf.cen_err = float("nan")
 pf.r_squared = float("nan")
+pf.fit_success = False
